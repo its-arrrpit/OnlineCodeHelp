@@ -1,0 +1,31 @@
+# Phase 9 Walkthrough — Containerization & Nginx Reverse Proxy Architecture
+
+## Overview of What Was Built
+1. **Multi-Stage Production Dockerfiles**:
+   - **Express API Server ([server/Dockerfile](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/Dockerfile))**: Compiles TypeScript, builds native C++ addons (`bcrypt`), runs Prisma generator, and packages into a slim, hardened Node 22 Alpine runtime executed by non-root user `appuser:1001`.
+   - **Standalone Worker ([server/Dockerfile.worker](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/Dockerfile.worker))**: Packages worker process with `docker-cli` and mounts `/var/run/docker.sock` to orchestrate isolated runner containers.
+   - **React Client + Nginx ([client/Dockerfile](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/client/Dockerfile))**: Compiles Vite bundle in Stage 1 and serves static assets from `nginx:1.27-alpine` in Stage 2.
+
+2. **Nginx Reverse Proxy & Static Asset Engine**:
+   - **Unified Single Port Entrypoint**: Port 80 (or 8080) handles all traffic.
+   - **SPA Routing Fallback (`try_files $uri $uri/ /index.html`)**: Deep routes like `/problems/:id` resolve to `index.html` with status 200 rather than 404.
+   - **High-Performance Caching & Compression**: `gzip` enabled across MIME types; 1-year immutable caching (`Cache-Control: public, max-age=31536000, immutable`) on `/assets/`.
+   - **Security Headers**: `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `X-XSS-Protection: 1; mode=block`.
+   - **Upstream Connection Keep-Alives**: `keepalive 32;` connection pooling and buffer tuning on `/api/`.
+
+3. **Multi-Container Production Orchestration**:
+   - `docker-compose.prod.yml` defines the entire topology across 5 services: `postgres`, `redis`, `api`, `worker`, and `nginx`.
+   - Dedicated internal bridge network `ocj-network` and persistent named volumes.
+
+---
+
+## Verification Results
+All 12 checks in [verify_phase9.ps1](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/scripts/verify_phase9.ps1) passed with zero errors:
+- **Container Health**: Nginx test container running and `nginx -t` syntax validated.
+- **Nginx Self-Health**: `GET /nginx-health` returned HTTP 200 OK.
+- **SPA Root**: `GET /` served production React bundle with status 200.
+- **SPA Fallback**: `GET /problems/a6e77892-10c6...` served `index.html` with status 200.
+- **Headers**: Immutable 1-year Cache-Control, `SAMEORIGIN`, and `nosniff` verified.
+- **API Reverse Proxy**: `GET /api/health` and `GET /api/problems` forwarded seamlessly to Express backend.
+- **Auth & Execution**: User logged in through Nginx, submitted Two Sum in **14ms**, and polled through Nginx to `ACCEPTED` (`345ms` runtime, `16MB` memory).
+- **Manifests**: All production Dockerfiles, compose files, and environment templates verified.

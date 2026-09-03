@@ -1,0 +1,210 @@
+# Phase 6 Walkthrough — Reliability & Robustness
+
+## 1. What Was Built
+
+In Phase 6, we hardened the Online Code Judge against distributed systems failure modes: race conditions, infrastructure blips, worker crashes, and poison pill jobs.
+
+### Components Created & Integrated:
+
+| Component | File Path | Role |
+|---|---|---|
+| **Infrastructure Error Classification** | [src/utils/InfrastructureError.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/utils/InfrastructureError.ts) | Distinguishes transient infrastructure faults (Docker daemon error, disk I/O) from user code errors (Wrong Answer, Runtime Error). |
+| **Dead-Letter Queue (DLQ)** | [src/queue/submissionDlq.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/queue/submissionDlq.ts) | Quarantines jobs that have exhausted all retry attempts, preserving payload, attempt counts, error stack traces, and failure timestamps for engineer inspection. |
+| **Exponential Backoff Retries** | [src/queue/submissionProducer.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/queue/submissionProducer.ts) | Automatically retries infrastructure errors up to 3 times with exponential backoff (1s, 2s). |
+| **Optimistic Locking & State Guards** | [src/services/submission.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/submission.service.ts) | Atomic conditional updates using `prisma.submission.updateMany` with current state conditions (`QUEUED` → `RUNNING`, `RUNNING` → Terminal) to eliminate race conditions. |
+| **Stalled Job Detection & Worker Recovery** | [src/queue/submissionConsumer.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/queue/submissionConsumer.ts) | Configured BullMQ heartbeat monitoring (`stalledInterval: 30000`, `maxStalledCount: 2`) to automatically recover jobs if a worker process is hard-killed (`kill -9` or OOM). |
+
+---
+
+## 2. Why It Was Built
+
+In distributed asynchronous systems, multiple failure modes can cause data corruption, infinite loops, and race conditions:
+
+1. **Race Conditions Between Concurrent Workers**:
+   - If two workers attempt to evaluate the same submission simultaneously (due to network re-delivery or duplicate triggers), both would spawn Docker containers and overwrite each other's verdicts.
+   - *Defense:* **Optimistic Locking at the DB layer** ensures only one worker successfully claims the job.
+
+2. **The "Poison Pill" Problem**:
+   - If a submission encounters an infrastructure failure (e.g. Docker daemon socket error) and retries indefinitely, workers enter an endless crash loop, starving the entire platform.
+   - *Defense:* **Dead-Letter Queue (DLQ)** quarantines the job after 3 attempts and marks the submission as `SYSTEM_ERROR`.
+
+3. **Retrying the Wrong Errors**:
+   - If a user submits code with an infinite loop (`TIME_LIMIT_EXCEEDED`) or syntax error (`COMPILATION_ERROR`), retrying it 3 times is pure waste of CPU.
+   - *Defense:* **Error Classification** treats user code outcomes as successful job completions with domain verdicts, reserving retries strictly for `InfrastructureError`.
+
+4. **Terminal State Corruption**:
+   - If a submission was already marked `ACCEPTED`, an outdated worker or delayed timeout handler must never overwrite it back to `RUNNING` or `WRONG_ANSWER`.
+   - *Defense:* **Terminal State Immutability Guard** ensures updates only apply if the current database status is `RUNNING`.
+
+---
+
+## 3. Important Code Deep Dive
+
+### 3.1 Optimistic Locking via Atomic Conditional Updates (`submission.service.ts`)
+```typescript
+// Atomically transition from QUEUED -> RUNNING.
+// updateMany translates to: UPDATE submissions SET status = 'RUNNING' WHERE id = $1 AND status = 'QUEUED'
+const transitionToRunning = await prisma.submission.updateMany({
+  where: {
+    id: submissionId,
+    status: SubmissionStatus.QUEUED, // Guard: MUST be currently QUEUED
+  },
+  data: { status: SubmissionStatus.RUNNING },
+});
+
+if (transitionToRunning.count === 0) {
+  logger.warn(
+    { submissionId },
+    'Optimistic locking aborted: Submission is no longer in QUEUED state (already claimed or processed)'
+  );
+  return; // Safely abort without spawning redundant Docker containers
+}
+```
+**Why this is interview gold:**
+Under high concurrency, PostgreSQL locks the row during the `UPDATE`. If Worker A and Worker B run this concurrently, exactly one will update 1 row (`count: 1`), while the other updates 0 rows (`count: 0`) and safely bails out. No distributed locks or Redis mutexes required!
+
+### 3.2 Terminal State Immutability Guard (`submission.service.ts`)
+```typescript
+const finalizeResult = await prisma.submission.updateMany({
+  where: {
+    id: submissionId,
+    status: SubmissionStatus.RUNNING, // Guard: MUST be currently RUNNING
+  },
+  data: {
+    status: result.status,
+    executionTimeMs: result.executionTimeMs,
+    memoryUsedMb: result.memoryUsedMb,
+    errorOutput: result.errorOutput,
+    failedTestCaseIndex: result.failedTestCaseIndex,
+  },
+});
+
+if (finalizeResult.count === 0) {
+  logger.warn('Terminal update aborted: Submission was already finalized');
+  return;
+}
+```
+Once a submission enters `ACCEPTED`, `WRONG_ANSWER`, or `TIME_LIMIT_EXCEEDED`, its status in PostgreSQL is no longer `RUNNING`. Any delayed or rogue process attempting to finalize the record will see `count === 0` and be rejected.
+
+### 3.3 Dead-Letter Queue (DLQ) Quarantine (`submissionConsumer.ts`)
+```typescript
+worker.on('failed', async (job, err) => {
+  const maxAttempts = job.opts.attempts ?? 1;
+  const isExhausted = job.attemptsMade >= maxAttempts;
+
+  if (isExhausted) {
+    // 1. Quarantine to DLQ for engineer inspection
+    await sendToDeadLetterQueue({
+      submissionId: job.data.submissionId,
+      originalJobId: job.id,
+      failedReason: err.message,
+      attemptsMade: job.attemptsMade,
+      failedAt: new Date().toISOString(),
+      stack: err.stack,
+    });
+
+    // 2. Mark submission in PostgreSQL as SYSTEM_ERROR so user isn't stuck on RUNNING
+    await prisma.submission.updateMany({
+      where: {
+        id: job.data.submissionId,
+        status: { in: [SubmissionStatus.QUEUED, SubmissionStatus.RUNNING] },
+      },
+      data: {
+        status: SubmissionStatus.SYSTEM_ERROR,
+        errorOutput: `System Error: Evaluation failed after ${job.attemptsMade} attempts due to infrastructure error.`,
+      },
+    });
+  }
+});
+```
+
+---
+
+## 4. Verification & Live Test Results
+
+### Test 1: Optimistic Locking Verified
+- Created a test submission in `ACCEPTED` state directly in DB.
+- Attempted to execute it via `executeSubmissionAsync`.
+- **Result:**
+  ```
+  [WARN] Optimistic locking aborted: Submission is no longer in QUEUED state (already claimed or processed)
+  ✅ Optimistic lock SUCCESS: Terminal submission was NOT overwritten or transitioned to RUNNING.
+  ```
+
+### Test 2: User Errors Trigger ZERO Retries
+- Executed a submission with `print(1 / 0)` (Python ZeroDivisionError).
+- **Result:**
+  ```
+  [INFO] Submission processed successfully and finalized in database (status: RUNTIME_ERROR, timeMs: 347)
+  ✅ User error SUCCESS: Status marked RUNTIME_ERROR without throwing infrastructure exception.
+  ```
+- BullMQ job completed cleanly with **0 retries**.
+
+### Test 3: Dead-Letter Queue (DLQ) Verified
+- Dispatched simulated infrastructure failure job to DLQ with 3 attempts.
+- Inspected quarantined job payload in Redis:
+  ```json
+  {
+    "submissionId": "dead-beef-1234-5678-90abcdef1234",
+    "originalJobId": "original-job-42",
+    "failedReason": "Docker daemon returned 500: Server error (disk space full)",
+    "attemptsMade": 3,
+    "failedAt": "2026-09-03T22:45:31.748Z",
+    "stack": "Error: Docker daemon returned 500\n    at DockerSandbox.run (/app/src/execution/DockerSandbox.ts:95:13)"
+  }
+  ```
+- Quarantined job was preserved with complete metadata and stack trace.
+
+### Test 4: Regression Check & Strict Build
+- Regression script `scripts/verify_phase5.ps1` ran: Two Sum Python solution evaluated to `ACCEPTED` in **298 ms** with API returning in **15 ms**.
+- `npm run build` passed with **zero TypeScript errors** in strict mode.
+
+---
+
+## 5. Technical Interview Questions & Model Answers
+
+### Q1: What is optimistic locking and how did you implement it in your database?
+**Model Answer:**
+> "Optimistic locking is a concurrency control technique where we assume conflicts are rare, so we don't hold heavy database row locks while work is performed. Instead, we perform an atomic conditional update at the moment of state transition. In Prisma/PostgreSQL, we execute `prisma.submission.updateMany({ where: { id, status: 'QUEUED' }, data: { status: 'RUNNING' } })`. If multiple workers attempt to process the same submission concurrently, PostgreSQL evaluates the query atomically: exactly one worker updates the row and receives `count === 1`, while other workers receive `count === 0` and safely abort."
+
+### Q2: What is a Dead-Letter Queue (DLQ) and why is it crucial in a production job queue?
+**Model Answer:**
+> "A Dead-Letter Queue is a separate queue that holds jobs that have failed all configured retry attempts. Without a DLQ, a poisoned job—such as one hitting an unexpected kernel bug or disk corruption—would either be permanently dropped and lost, or retried indefinitely, crashing workers. A DLQ isolates the failed job, preserving the payload, error stack trace, and attempt count. This allows engineering teams to inspect the failure, fix the underlying bug, and redrive the message while updating the user's submission to `SYSTEM_ERROR`."
+
+### Q3: Why should user code errors NOT be retried, while infrastructure errors should?
+**Model Answer:**
+> "User code errors—such as Wrong Answer, Compilation Error, Runtime Error, or Time Limit Exceeded—are deterministic domain outcomes of the user's code. Retrying an infinite loop or syntax error will produce the exact same outcome every time while wasting expensive CPU and container resources. In contrast, infrastructure errors—such as a temporary Docker daemon connection reset or network glitch—are transient. Retrying transient failures with exponential backoff allows the system to self-heal without user intervention."
+
+### Q4: How does exponential backoff work and why is it preferred over fixed delays?
+**Model Answer:**
+> "Exponential backoff increases the delay between successive retries exponentially (e.g. 1s, 2s, 4s). If an infrastructure component (like the database or Docker daemon) is experiencing high load or restarting, retrying immediately or with a fixed short interval creates a 'thundering herd' problem that exacerbates the outage. Exponential backoff gives the downstream service time to recover and clear its backlog."
+
+### Q5: What is a stalled job in BullMQ and how did you handle worker crash recovery?
+**Model Answer:**
+> "A job becomes 'stalled' when a worker process crashes abruptly (e.g., OOM-kill, hardware failure, power loss) while actively executing a job. BullMQ maintains a visibility lock with a periodic heartbeat (`stalledInterval: 30000`). If the worker stops sending heartbeats, BullMQ detects that the lock has expired. BullMQ then triggers the `stalled` event and can re-enqueue the job for another worker to pick up, preventing jobs from being stranded in an active state indefinitely."
+
+### Q6: How do you guarantee that a submission's terminal state is immutable?
+**Model Answer:**
+> "We enforce state immutability at the database query level. When the execution engine completes, we update PostgreSQL using `WHERE id = $id AND status = 'RUNNING'`. If another process has already marked the submission as `ACCEPTED` or `SYSTEM_ERROR`, the `status` is no longer `RUNNING`, so the update affects 0 rows. This guarantees that once a terminal verdict is written, no delayed or rogue asynchronous callback can overwrite it."
+
+---
+
+## 6. What You Should Understand Before Moving to Phase 7
+
+Before proceeding to Phase 7 (Performance & Caching):
+- [x] Why `updateMany` with a status condition acts as an atomic optimistic lock.
+- [x] The difference between domain failures (WA, TLE) and infrastructure failures (Docker daemon drop).
+- [x] How exponential backoff prevents thundering herd problems.
+- [x] The role of the Dead-Letter Queue in debugging and production observability.
+- [x] How stalled job detection recovers from sudden worker process crashes.
+
+---
+
+## Ready for Phase 7!
+In **Phase 7 (Performance & Caching)**, we will build:
+1. **Redis Cache-Aside** for problem metadata (`GET /api/problems/:id`).
+2. **Cache Invalidation** on problem update/deletion.
+3. **Redis-Backed Rate Limiting** on code submissions (`POST /api/submissions`).
+4. **Database Query Optimization & Index Verification**.
+
+Whenever you're ready, say **"proceed to Phase 7"**!

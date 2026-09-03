@@ -1,0 +1,206 @@
+# Phase 7 Walkthrough — Performance, Caching & Rate Limiting
+
+## 1. What Was Built
+
+In Phase 7, we elevated system throughput, minimized database load, and protected server resources by implementing three essential production performance patterns: **Redis Cache-Aside**, **Proactive Cache Invalidation**, and **Distributed Rate Limiting**, alongside **PostgreSQL Composite Index Optimization**.
+
+### Components Created & Integrated:
+
+| Component | File Path | Role |
+|---|---|---|
+| **Redis Cache Service** | [src/services/cache.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/cache.service.ts) | Implements `getOrSet` Cache-Aside logic, fail-open error handling, and safe non-blocking key pattern invalidation using Redis cursor-based `SCAN` (instead of blocking `KEYS *`). |
+| **Problem Caching & Invalidation** | [src/services/problem.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/problem.service.ts) & [src/services/testcase.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/testcase.service.ts) | Caches problem details (`GET /api/problems/:id`) with 1-hour TTL and paginated problem lists (`GET /api/problems`) with 5-minute TTL. Automatically invalidates cache on problem create/update/delete and test case modifications. |
+| **Distributed Rate Limiter** | [src/middleware/rateLimiter.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/middleware/rateLimiter.ts) | Redis-backed sliding/fixed-window rate limiter mounted on `POST /api/submissions`. Limits users to 5 submissions/minute. Returns standard headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After`) and `HTTP 429 Too Many Requests`. |
+| **Database Composite Index** | [prisma/schema.prisma](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/prisma/schema.prisma) | Added B-tree composite index `@@index([isPublished, createdAt(sort: Desc)])` to `problems` table, applied via migration `20260903224848_add_problem_browse_index`. |
+
+---
+
+## 2. Why It Was Built
+
+In a coding platform like LeetCode:
+1. **Read-Heavy Traffic Distribution**:
+   - 95%+ of user traffic consists of browsing problem lists, reading problem statements, constraints, and sample test cases.
+   - Without caching, every single page reload executes expensive relational JOIN queries against PostgreSQL (`SELECT ... FROM problems JOIN test_cases ...`).
+   - Caching problem metadata in Redis reduces response latency from ~10ms down to **~2ms** while freeing database connections for critical writes.
+2. **Abuse Prevention & Resource Protection**:
+   - Compiling and executing Docker containers is computationally expensive.
+   - Without rate limiting, a malicious script or an automated bot could spam `POST /api/submissions` hundreds of times per second, exhausting CPU cores and disk I/O.
+   - Storing rate-limit counters in Redis ensures all API instances behind a load balancer share the exact same count, preventing distributed threshold bypass.
+3. **Index Optimization**:
+   - Problem listings query `WHERE isPublished = true ORDER BY createdAt DESC`.
+   - Without an index, PostgreSQL must perform a sequential scan and an in-memory sort (`Sort Key: createdAt DESC`). A composite index on `(isPublished, createdAt DESC)` allows PostgreSQL to perform an index scan that outputs rows already in sorted order with zero extra sort overhead.
+
+---
+
+## 3. Important Code Deep Dive
+
+### 3.1 Redis Cache-Aside Pattern with Non-Blocking `SCAN` (`cache.service.ts`)
+```typescript
+export class CacheService {
+  /**
+   * Implements Cache-Aside: checks Redis first, falls back to DB on miss,
+   * populates cache with TTL, and returns.
+   */
+  static async getOrSet<T>(
+    key: string,
+    ttlSeconds: number,
+    fetcher: () => Promise<T>
+  ): Promise<T> {
+    const cached = await this.get<T>(key);
+    if (cached !== null) {
+      return cached; // Cache Hit!
+    }
+
+    const freshData = await fetcher(); // Cache Miss -> Query PostgreSQL
+    if (freshData !== null && freshData !== undefined) {
+      await this.set(key, freshData, ttlSeconds);
+    }
+    return freshData;
+  }
+
+  /**
+   * Invalidates keys matching pattern using non-blocking cursor SCAN.
+   */
+  static async delPattern(pattern: string): Promise<void> {
+    try {
+      let cursor = '0';
+      do {
+        const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = nextCursor;
+        if (keys.length > 0) {
+          await redis.del(...keys);
+        }
+      } while (cursor !== '0');
+    } catch (error) {
+      logger.warn({ pattern, error }, 'Cache delPattern failed');
+    }
+  }
+}
+```
+**Why `SCAN` instead of `KEYS *` is an interview distinction:**
+In Redis, `KEYS *` is an $O(N)$ blocking command. Because Redis is single-threaded, running `KEYS problems:*` on a database with millions of keys blocks all other Redis operations for hundreds of milliseconds. Cursor-based `SCAN` iterates incrementally in batches of 100 without blocking the event loop.
+
+### 3.2 Distributed Rate Limiter Pipeline (`rateLimiter.ts`)
+```typescript
+const identifier = req.user?.userId || req.ip || 'anonymous';
+const key = `ratelimit:submissions:${identifier}`;
+
+// Atomic pipeline: increment counter and check TTL in a single network round-trip
+const pipeline = redis.pipeline();
+pipeline.incr(key);
+pipeline.ttl(key);
+const results = await pipeline.exec();
+
+const currentCount = Number(results[0][1]);
+let currentTtl = Number(results[1][1]);
+
+// If first request in window, set TTL
+if (currentTtl === -1) {
+  await redis.expire(key, windowSeconds);
+  currentTtl = windowSeconds;
+}
+
+res.setHeader('X-RateLimit-Limit', limit);
+res.setHeader('X-RateLimit-Remaining', Math.max(0, limit - currentCount));
+res.setHeader('X-RateLimit-Reset', Math.ceil(Date.now() / 1000) + currentTtl);
+
+if (currentCount > limit) {
+  res.setHeader('Retry-After', currentTtl);
+  throw ApiError.tooManyRequests(`Too many submissions. Maximum ${limit} submissions per minute.`);
+}
+```
+**Why Redis Pipelining matters:**
+Instead of sending `INCR` to Redis, waiting for the response, and then sending `TTL`, `redis.pipeline()` batches both commands together into a single network packet, cutting network round-trip time (RTT) by half.
+
+---
+
+## 4. Verification & Live Test Results
+
+Automated test script (`scripts/verify_phase7.ps1`) verified all performance layers:
+
+### Test 1: Cache-Aside Latency
+- **1st Request (Cache Miss):** Fetched from PostgreSQL in **7 ms**.
+- **Redis Verification:** Key `problem:public:a6e77892-10c6-44ff-8d51-1633bad8fad1` created with TTL: **3600 seconds**.
+- **2nd Request (Cache Hit):** Served from Redis in **2 ms** (**71% latency reduction**).
+
+### Test 2: Proactive Cache Invalidation
+- Admin updated problem title to: `"Two Sum (Updated Performance Edition)"`.
+- Inspected Redis key immediately: **`0` (purged instantly)**.
+- Subsequent public GET request fetched fresh title from DB and re-populated cache.
+- Reverted problem title to original.
+
+### Test 3: Distributed Rate Limiting
+- User sent 5 rapid submissions to `POST /api/submissions`:
+  ```
+  Submission 1 -> HTTP 201 | X-RateLimit-Limit: 5 | Remaining: 4
+  Submission 2 -> HTTP 201 | X-RateLimit-Limit: 5 | Remaining: 3
+  Submission 3 -> HTTP 201 | X-RateLimit-Limit: 5 | Remaining: 2
+  Submission 4 -> HTTP 201 | X-RateLimit-Limit: 5 | Remaining: 1
+  Submission 5 -> HTTP 201 | X-RateLimit-Limit: 5 | Remaining: 0
+  ```
+- User sent 6th submission:
+  ```
+  Caught Expected HTTP 429 Too Many Requests | Retry-After: 60 seconds
+  ```
+- Blocked cleanly with zero Docker container allocations.
+
+### Test 4: Database Composite Index Verification
+Inspected PostgreSQL table schema using `psql`:
+```
+Indexes:
+    "problems_pkey" PRIMARY KEY, btree (id)
+    "problems_isPublished_createdAt_idx" btree ("isPublished", "createdAt" DESC)
+```
+The B-tree index on `("isPublished", "createdAt" DESC)` is active in PostgreSQL.
+
+---
+
+## 5. Technical Interview Questions & Model Answers
+
+### Q1: What is the Cache-Aside pattern and how did you implement it?
+**Model Answer:**
+> "In the Cache-Aside (lazy loading) pattern, the application code coordinates directly between the cache and the primary database. When querying problem metadata (`GET /api/problems/:id`), we check Redis first. On a Cache Hit, data is returned in under 2ms without touching PostgreSQL. On a Cache Miss, we query PostgreSQL, serialize the record into Redis with an expiration TTL (1 hour), and return the result. When an admin updates or deletes a problem, we proactively invalidate the corresponding Redis key (`problem:public:<id>`) so stale data is never served."
+
+### Q2: Why did you use Redis `SCAN` instead of `KEYS *` for cache invalidation?
+**Model Answer:**
+> "`KEYS *` is an $O(N)$ synchronous blocking command. Because Redis is single-threaded, executing `KEYS` across a database with millions of keys halts all other incoming read, write, and queue operations until the scan finishes, introducing severe latency spikes. In contrast, `SCAN` is cursor-based: it inspects keys in small, non-blocking batches of 100, yielding control back to the Redis event loop between iterations. This ensures zero disruption to live traffic."
+
+### Q3: Why is an in-memory rate limiter insufficient when scaling horizontally?
+**Model Answer:**
+> "An in-memory rate limiter (like the default store in `express-rate-limit`) stores request counts in the RAM of the single Node.js process. When multiple API server instances are deployed behind a load balancer (e.g. Nginx or AWS ALB), incoming requests are distributed across instances. If a rate limit is 5 requests per minute and a client sends 4 requests to Instance A and 4 requests to Instance B, the client executes 8 requests without being throttled. A centralized Redis-backed rate limiter ensures all API instances share the exact same counter, enforcing an accurate global limit."
+
+### Q4: How does Redis pipelining improve rate limiter performance?
+**Model Answer:**
+> "In our rate limiter, we need to increment the request counter (`INCR`) and inspect the remaining time window (`TTL`). Without pipelining, the application would send `INCR`, wait for the network response, and then send `TTL`, incurring two full network round-trip times (RTTs). With `redis.pipeline()`, ioredis bundles both commands into a single TCP packet sent to Redis, and Redis returns both answers in one response, cutting network overhead by 50% on every rate-limited HTTP request."
+
+### Q5: What is a "fail-open" caching and rate-limiting strategy?
+**Model Answer:**
+> "Fail-open means that if a supporting infrastructure service (such as Redis) experiences temporary network partition or downtime, the application gracefully degrades rather than failing the user's request. In our `CacheService` and `rateLimiter`, if Redis throws an error, we catch it, log an alert, and fall back directly to querying PostgreSQL or allowing the submission through. This prevents a cache or rate-limiter hiccup from turning into a complete platform outage."
+
+### Q6: Why did you create a composite index on `(isPublished, createdAt DESC)`?
+**Model Answer:**
+> "Our main problem listing endpoint queries `WHERE isPublished = true ORDER BY createdAt DESC`. If we only indexed `createdAt`, PostgreSQL would have to filter out unpublished problems after scanning. If we had separate single-column indexes, PostgreSQL would have to perform a bitmap index scan and an expensive in-memory sort. A composite B-tree index on `(isPublished, createdAt DESC)` allows PostgreSQL to locate published problems and read their index pointers in exact reverse chronological order, eliminating the sorting phase entirely."
+
+---
+
+## 6. Prerequisites Checklist Before Phase 8 (Frontend)
+
+Please confirm your understanding of:
+- [x] How Cache-Aside works and why TTLs are necessary.
+- [x] Why `SCAN` is production-safe whereas `KEYS` is dangerous.
+- [x] How Redis pipelining optimizes rate limiting round-trips.
+- [x] Why distributed rate limiting requires a centralized shared store.
+- [x] How composite B-tree indexes eliminate sorting overhead in SQL queries.
+
+---
+
+### What's Next in Phase 8: Modern React Frontend
+In **Phase 8**, we will build a modern **React + Vite + TypeScript + TailwindCSS** web application:
+1. **Design System & Aesthetics**: Dark mode, glassmorphism, responsive navigation.
+2. **Auth Views**: Login and Registration forms with token persistence.
+3. **Problem Catalog**: Filterable problem list with difficulty badges.
+4. **Monaco Code Editor**: Multi-language IDE with syntax highlighting (Python, C++, Java).
+5. **Real-Time Polling & Verdict Viewer**: Instant submission, animated polling, and verdict badges (`ACCEPTED`, `WRONG_ANSWER`, `TLE`, etc.).
+6. **Submission History**: Detailed breakdown of user's past runs with execution time and memory stats.
+
+Whenever you're ready, say **"proceed to Phase 8"**!

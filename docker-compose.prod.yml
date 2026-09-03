@@ -1,0 +1,131 @@
+# ===================================================================
+# Online Code Judge — Production Multi-Container Docker Compose
+# ===================================================================
+# Orchestrates:
+#   1. PostgreSQL 16 (Relational Store with B-tree indexes)
+#   2. Redis 7 (Distributed Queue & Cache-Aside)
+#   3. Express API (Stateless REST backend)
+#   4. Standalone Worker (BullMQ consumer + Docker sandbox orchestrator)
+#   5. Nginx (Reverse proxy, TLS termination & React SPA static server)
+# ===================================================================
+
+services:
+  # ─── 1. PostgreSQL Database ───────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: ocj-prod-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ocj_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ocj_password}
+      POSTGRES_DB: ${POSTGRES_DB:-online_code_judge}
+    volumes:
+      - ocj_postgres_prod_data:/var/lib/postgresql/data
+    networks:
+      - ocj-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ocj_user} -d ${POSTGRES_DB:-online_code_judge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─── 2. Redis In-Memory Cache & Distributed Queue ─────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ocj-prod-redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ocj_redis_prod_data:/data
+    networks:
+      - ocj-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ─── 3. Express API Server ────────────────────────────────────────
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: ocj-prod-api
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ocj_user}:${POSTGRES_PASSWORD:-ocj_password}@postgres:5432/${POSTGRES_DB:-online_code_judge}?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-super-secret-production-jwt-key-256bit}
+      JWT_EXPIRES_IN: 7d
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ocj-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:4000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ─── 4. Standalone Execution Worker ───────────────────────────────
+  worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.worker
+    container_name: ocj-prod-worker
+    restart: always
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ocj_user}:${POSTGRES_PASSWORD:-ocj_password}@postgres:5432/${POSTGRES_DB:-online_code_judge}?schema=public
+      REDIS_URL: redis://redis:6379
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - ocj-network
+
+  # ─── 5. Nginx Reverse Proxy & React SPA Server ────────────────────
+  nginx:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: ocj-prod-nginx
+    restart: always
+    ports:
+      - "${PROD_HTTP_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - ocj-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  ocj-network:
+    driver: bridge
+
+volumes:
+  ocj_postgres_prod_data:
+    driver: local
+  ocj_redis_prod_data:
+    driver: local

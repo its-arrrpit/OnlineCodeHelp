@@ -1,0 +1,45 @@
+# ===================================================================
+# Production Multi-Stage Dockerfile — Standalone Worker Process
+# ===================================================================
+
+# ─── Stage 1: Build ─────────────────────────────────────────────────
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ openssl
+
+COPY package*.json ./
+COPY prisma ./prisma/
+
+RUN npm ci
+RUN npx prisma generate
+
+COPY tsconfig.json ./
+COPY src ./src/
+
+RUN npm run build
+
+# ─── Stage 2: Production Worker Runtime ──────────────────────────────
+FROM node:22-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Install openssl for Prisma and docker-cli to execute runner sandboxes
+RUN apk add --no-cache openssl docker-cli
+
+COPY package*.json ./
+COPY prisma ./prisma/
+
+RUN apk add --no-cache --virtual .build-deps python3 make g++ \
+    && npm ci --only=production \
+    && npx prisma generate \
+    && apk del .build-deps \
+    && npm cache clean --force
+
+COPY --from=builder /app/dist ./dist
+
+# Worker must run docker commands against /var/run/docker.sock
+CMD ["node", "dist/worker.js"]

@@ -1,0 +1,54 @@
+# Phase 10 Walkthrough — Observability, Metrics, Health Monitoring & Load Testing
+
+## Overview of What Was Built
+1. **Prometheus Metrics Registry & Custom Telemetry ([server/src/utils/metrics.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/utils/metrics.ts))**:
+   - Integrated `prom-client` with standard Node.js runtime collection (event loop delay, heap/RSS memory, GC cycles, active handles).
+   - **HTTP Telemetry**: `codejudge_http_requests_total` counter and `codejudge_http_request_duration_seconds` histogram parameterized with route, method, and status. Implemented dynamic route normalizer (`/api/problems/:id` masking) to protect against cardinality explosion.
+   - **Queue Depth Gauges**: `codejudge_queue_jobs_gauge` tracking BullMQ `waiting`, `active`, `completed`, `failed`, and `delayed` job counts.
+   - **Execution Engine Telemetry**: `codejudge_submissions_total` tracking accepted/rejected incoming jobs, `codejudge_submission_verdicts_total` tracking verdicts (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`, `COMPILATION_ERROR`), and `codejudge_submission_duration_seconds` histogram for execution times.
+   - **Cache & Security Telemetry**: `codejudge_cache_operations_total` (hit/miss/set/del tracking) and `codejudge_rate_limit_rejections_total`.
+   - Exposed Prometheus standard scrape target at `GET /api/metrics`.
+
+2. **Deep Health & Readiness Probes ([server/src/index.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/index.ts))**:
+   - **Liveness Probe (`GET /api/health`)**: Lightweight check exposing uptime, timestamps, and process memory utilization (`heapUsedMb`, `heapTotalMb`, `rssMb`).
+   - **Readiness Probe (`GET /api/ready`)**: Deep dependency inspection actively executing:
+     - PostgreSQL ping: `SELECT 1` query.
+     - Redis ping: Client `ping()` command.
+     - BullMQ queue readiness: Client connection status validation.
+     - Returns HTTP 200 OK when 100% operational, or HTTP 503 Service Unavailable with degraded subsystem status breakdown if any dependency is down.
+   - **Diagnostic Endpoint (`GET /api/system/status`)**: Exposes live BullMQ counts, process memory, and dependency statuses.
+
+3. **Frontend Real-Time Telemetry Modal ([client/src/components/SystemHealthModal.tsx](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/client/src/components/SystemHealthModal.tsx))**:
+   - Bespoke glassmorphic modal embedded in navigation bar with an animated pulsing indicator.
+   - Polls `/api/ready` and `/api/system/status` every 3 seconds.
+   - Visual gauges and badges for PostgreSQL, Redis, and BullMQ cluster health.
+   - Live queue metrics breakdown (waiting, active docker sandboxes, completed, failed).
+   - Real-time Node.js heap memory tracking.
+
+4. **Concurrency & Stress Load Testing Suite ([server/scripts/load_test.ps1](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/scripts/load_test.ps1))**:
+   - Automated multi-request concurrent burst generator against `/api/submissions`.
+   - Measures end-to-end burst duration, throughput (req/sec), latency percentiles (average and p95), rate-limit backpressure response, and queue drain duration.
+
+---
+
+## Verification Results
+
+The automated Phase 10 test suite ([server/scripts/verify_phase10.ps1](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/scripts/verify_phase10.ps1)) verified all 7 subsystems:
+
+1. **Liveness Probe (`GET /api/health`)**:
+   - Returned `status: "ok"`, `heapUsed: 27 MB`, `rss: 121 MB`, `uptime: 154s`.
+2. **Deep Readiness Probe (`GET /api/ready`)**:
+   - Actively queried PostgreSQL (`connected`), Redis (`connected`), and BullMQ (`connected`).
+3. **Prometheus Metrics Scrape (`GET /api/metrics`)**:
+   - Returned HTTP 200 with Prometheus text representation (`# TYPE codejudge_submissions_total counter`, `# TYPE codejudge_http_request_duration_seconds histogram`, etc.).
+4. **System Status Telemetry (`GET /api/system/status`)**:
+   - Real-time BullMQ telemetry reported `waiting: 0, active: 0, completed: 22, failed: 0`.
+5. **Concurrency & Stress Load Benchmark**:
+   - Launched concurrent burst of 8 submissions to the judge engine.
+   - First 5 requests accepted with **201 Created in an average of 9.8ms** (p95: 16ms).
+   - Subsequent burst requests safely throttled with **429 Too Many Requests** by the Redis distributed sliding-window rate limiter, protecting upstream resources.
+   - BullMQ worker drained all pending jobs in isolated Docker sandboxes within 4 seconds.
+6. **Prometheus Metric Counter Increments**:
+   - Verified that `codejudge_submissions_total` and `codejudge_http_request_duration_seconds_count` incremented accurately under live load.
+7. **Client Production Bundle**:
+   - Production Vite bundle compiled cleanly with `SystemHealthModal` and `Navbar` telemetry trigger.

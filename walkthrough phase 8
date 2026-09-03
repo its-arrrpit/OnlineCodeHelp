@@ -1,0 +1,171 @@
+# Phase 8 Walkthrough — Frontend Architecture & Real-Time IDE
+
+## 1. What & Why It Was Built
+
+In Phases 1 through 7, we built the entire distributed backend: Express API, Docker sandboxing, BullMQ asynchronous workers, Redis cache-aside, dead-letter queues, optimistic concurrency locking, and rate limiting.
+
+In **Phase 8**, we brought this system to life with an interview-grade, LeetCode-equivalent **Frontend Web Application** built with **React 19**, **Vite**, **TypeScript**, and **Monaco Editor** (VS Code web runtime).
+
+### Key Features Built:
+1. **Bespoke Modern Dark Design System (`client/src/index.css`)**:
+   - Curated obsidian/slate color palette (`#090d16`, `#0f172a`, `#141e33`) with glowing gradient accents (Emerald `#10b981`, Indigo `#6366f1`, Cyan `#06b6d4`, Rose `#f43f5e`, Amber `#f59e0b`).
+   - Glassmorphic panels (`backdrop-filter: blur(16px)`), customized sleek scrollbars, and pulsing micro-animations.
+   - Professional typography featuring Google Fonts: **Inter** for UI controls and **JetBrains Mono** for code and technical stats.
+
+2. **Split-Pane Problem Solving Workspace (`src/pages/ProblemDetailPage.tsx`)**:
+   - **Left Column**: Problem statement, formatted constraints, sample test cases with one-click copy buttons, and an interactive "Submissions" tab.
+   - **Right Column**: Language selector (`Python 3`, `C++ 17`, `Java 21`), starter code templates, embedded Monaco editor with dark theme syntax highlighting, and execution control deck.
+
+3. **Real-Time Submission Polling Engine (`src/hooks/useSubmissionPolling.ts`)**:
+   - When a user submits code, `POST /api/submissions` returns `201 Created` with status `'QUEUED'` in ~10ms.
+   - The custom hook initiates non-blocking background polling at 1-second intervals against `GET /api/submissions/:id`.
+   - The UI displays an animated loader during `QUEUED` and `RUNNING`, transitioning seamlessly to the terminal verdict card (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`, `COMPILATION_ERROR`, etc.) once the Docker worker finishes.
+
+4. **Detailed Verdict & Telemetry Deck (`src/components/VerdictCard.tsx`)**:
+   - Color-coded verdict badge.
+   - Runtime execution clock (`297 ms`) and memory consumption meter (`16 MB`).
+   - Compiler/runtime error traces rendered inside an obsidian code block.
+   - Individual test case pass/fail breakdown chips.
+
+5. **Authentication & Session Persistence (`src/context/AuthContext.tsx`)**:
+   - JWT session management in `localStorage` with Axios request interceptors automatically attaching `Bearer <token>`.
+   - One-click demo credentials autofill (`user@codejudge.com` / `user123` and `admin@codejudge.com` / `admin123`) on `/login`.
+   - Protected routes for `/submissions`.
+
+6. **Problem Catalog & Personal Submissions Log (`src/pages/ProblemsPage.tsx`, `src/pages/SubmissionsPage.tsx`)**:
+   - Real-time search query filtering and difficulty tab filters (`All`, `Easy`, `Medium`, `Hard`).
+   - Pagination controls, difficulty badges, and resource constraint indicators.
+
+---
+
+## 2. System Design & Code Concepts
+
+### A. Polling vs. WebSockets vs. Server-Sent Events (SSE)
+In asynchronous code judge architectures, the API server decouples job submission from worker execution:
+- **WebSockets:** Full-duplex persistent TCP connection. Excellent for high-frequency bidirectional chat or gaming, but introduces stateful connection management across horizontally scaled API servers (requires Redis Pub/Sub adapter to route worker completion events to the specific WebSocket connection socket).
+- **Server-Sent Events (SSE):** Unidirectional HTTP streaming from server to client. Simpler than WebSockets, but holds open HTTP connections and suffers from proxy connection timeouts.
+- **Short Polling with Exponential Backoff / Circuit Breaker:** The client queries `GET /api/submissions/:id` every 1,000ms until a terminal status (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`) is detected.
+  - **Why Polling fits here:** Code submissions typically evaluate in 300ms to 2,000ms. An evaluation requires at most 1–3 polling queries. Polling keeps the API server **completely stateless**, naturally load-balanced across any server replica, and leverages existing HTTP caching and proxy infrastructure without persistent socket overhead.
+
+### B. Monaco Editor Integration & State Lifecycle
+Monaco is the core editor powering Visual Studio Code:
+- It runs client-side in the browser, compiling syntax trees, providing keyword highlighting, indentation rules, and bracket matching.
+- We customize its theme dynamically with `monaco.editor.defineTheme('codejudge-dark', ...)` to match our slate/indigo color tokens.
+- Language switching automatically loads pre-configured starter templates (`STARTER_TEMPLATES[language]`) while preserving user work.
+
+### C. Axios Request Interceptor Pattern
+Instead of manually injecting the JWT header in every single API call:
+```typescript
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('codejudge_token');
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+```
+This centralizes authentication cross-cutting concerns, making services clean, type-safe, and decoupled from auth tokens.
+
+---
+
+## 3. Trade-offs & Engineering Decisions
+
+| Architectural Choice | Decision Made | Trade-Off / Alternative Considered |
+| :--- | :--- | :--- |
+| **Real-time Updates** | Client Polling (1s interval, 60s timeout safeguard) | WebSockets / SSE offer instant push notifications, but require stateful socket gateway servers, sticky sessions, or Redis Pub/Sub socket adapters. Polling keeps API instances 100% stateless. |
+| **Styling Engine** | Bespoke CSS Design System (`index.css`) with tokens | Avoided TailwindCSS configuration overhead, version mismatch, or bloated class names. Bespoke CSS gave pixel-perfect control over glowing gradients, Monaco wrappers, and glassmorphism. |
+| **Editor Runtime** | `@monaco-editor/react` | Monaco is heavier than simple textareas or CodeMirror (~300KB gzipped), but delivers an authentic VS Code desktop editing experience expected by candidates in technical interviews. |
+| **Token Storage** | `localStorage` | In high-security banking apps, `httpOnly` cookies with CSRF tokens prevent XSS token theft. For standard developer platforms, `localStorage` simplifies client-side state inspection and cross-origin dev proxying. |
+
+---
+
+## 4. Interview Questions & Model Answers (SDE Fresher Level)
+
+### Q1: Why did you choose client-side polling over WebSockets for fetching submission results?
+**Model Answer:**
+> "In an online code judge, typical code execution takes between 300ms and 2 seconds. A user makes a submission and waits briefly for the verdict. 
+> Implementing WebSockets introduces persistent TCP connections that make API servers stateful. In a horizontally scaled production environment with multiple API replicas behind an Nginx load balancer, routing a worker's completion event to the exact server holding the user's WebSocket connection requires a distributed pub/sub broker like Redis Pub/Sub and heartbeat connection management.
+> Short polling (every 1 second for a maximum of 60 attempts) allows our API servers to remain completely stateless. Any server replica can service the `GET /api/submissions/:id` request directly from PostgreSQL or Redis cache. Given the low query volume (typically 1–2 poll queries per submission), short polling provides the simplest, most resilient, and highly scalable architecture."
+
+### Q2: How does Monaco Editor communicate with your React component, and how do you handle state synchronization?
+**Model Answer:**
+> "We wrap Monaco using `@monaco-editor/react`. The component is controlled via `value` and `onChange` props. On editor mount (`onMount`), we obtain direct references to the Monaco editor instance and the global `monaco` namespace. This allows us to inject custom theme rules (`codejudge-dark`), configure font ligatures with JetBrains Mono, adjust padding, and disable the minimap for a compact IDE split-pane. When the user switches programming languages, we update both the editor's language mode (e.g. `'python'`, `'cpp'`, `'java'`) and populate the editor buffer with the language-specific boilerplate template."
+
+### Q3: What happens if a user submits code 10 times in 10 seconds? How does the frontend handle backend rate limiting?
+**Model Answer:**
+> "In Phase 7, we implemented a distributed Redis rate limiter enforcing a threshold of 5 submissions per minute per user on `POST /api/submissions`. 
+> If a user exceeds this limit, the backend returns `HTTP 429 Too Many Requests` along with a `Retry-After: <seconds>` response header. 
+> In the frontend `ProblemDetailPage.tsx`, our Axios error handler specifically catches HTTP status 429, extracts the `Retry-After` header, and renders a prominent amber alert banner: *'Rate limit exceeded: Max 5 submissions per minute. Please wait 45s before retrying.'* The submit button remains disabled or warns the user, preventing further spam."
+
+### Q4: How do you prevent memory leaks when implementing polling in React?
+**Model Answer:**
+> "In `useSubmissionPolling.ts`, polling is managed via recursive `setTimeout` referenced in a `useRef` hook (`timerRef`). To prevent memory leaks when a user navigates away from the page before submission evaluation completes:
+> 1. We provide an explicit `stopPolling` cleanup function that calls `clearTimeout(timerRef.current)` and resets references.
+> 2. We stop polling immediately as soon as a terminal state (`ACCEPTED`, `WRONG_ANSWER`, etc.) is received.
+> 3. We implement a hard attempt limit (`maxAttempts = 60`) so that if a worker crashes or a job stalls indefinitely, polling terminates safely without querying the backend forever."
+
+### Q5: What is the difference between `Vite` and traditional bundlers like `Webpack` during development?
+**Model Answer:**
+> "Webpack bundles the entire application dependency graph into memory before serving, which causes cold-start build times and hot module replacement (HMR) to slow down as the project grows. 
+> Vite leverages native browser ES modules (ESM). In development, Vite starts the dev server immediately (in ~200ms) without pre-bundling user source code. Files are transformed on-demand when requested by the browser. Third-party dependencies are pre-bundled using `esbuild` (written in Go), which is 10–100x faster than JavaScript-based bundlers. For production, Vite uses Rollup to produce highly optimized, code-split static assets."
+
+---
+
+## 5. Verification Results
+
+```powershell
+=== Phase 8 Frontend Verification ===
+
+1. Checking Vite Dev Server on Port 3000...
+   [PASS] Vite dev server is serving index.html (Status: 200)
+   [PASS] Document contains brand title: CodeJudge
+
+2. Checking Vite Dev Proxy to Express Backend (/api/health)...
+   [PASS] Vite proxy successfully forwarded request to Express API
+   [PASS] Backend Status: healthy, Uptime: 954.40s
+
+3. Checking Problems Catalog via Proxy (/api/problems)...
+   [PASS] Retrieved 4 problems (Total: 4)
+   [PASS] Selected Problem: 'Two Sum' [ID: a6e77892-10c6-44ff-8d51-1633bad8fad1, Difficulty: EASY]
+
+4. Testing User Authentication via Proxy (/api/auth/login)...
+   [PASS] Successfully logged in as 'testuser' (USER)
+   [PASS] Received JWT token: eyJhbGciOiJIUzI1NiIs...
+
+5. Verifying Auth Token Session (/api/auth/me)...
+   [PASS] Token authenticated user: user@codejudge.com
+
+6. Submitting Solution to 'Two Sum' via Proxy...
+   [PASS] Submission created in 10 ms
+   [PASS] Submission ID: 5c899320-dea2-4b43-8a37-ca37a9fae1b0, Initial Status: QUEUED
+
+7. Emulating Frontend Real-Time Polling (useSubmissionPolling)...
+   Poll 1: Status = RUNNING
+   Poll 2: Status = ACCEPTED
+   [PASS] Solution Evaluated Successfully!
+   [PASS] Verdict: ACCEPTED
+   [PASS] Runtime: 297 ms
+   [PASS] Memory:  16 MB
+
+8. Verifying User Submissions History (/api/users/me/submissions)...
+   [PASS] Successfully retrieved 8 past submissions for problem
+   [PASS] Most recent submission status: ACCEPTED
+
+9. Verifying Client Production Bundle (client/dist)...
+   [PASS] Production build exists: index.html (976 bytes)
+
+=== ALL PHASE 8 FRONTEND CHECKS PASSED ===
+```
+
+---
+
+## 6. Prerequisites Checklist Before Phase 9
+
+- [x] Client application runs cleanly on `http://localhost:3000` via Vite dev server
+- [x] Vite dev proxy routes `/api` directly to Express backend on port 4000
+- [x] Monaco code editor displays syntax-highlighted code with starter templates for Python, C++, and Java
+- [x] Submission creation returns `QUEUED` in under 15ms and initiates real-time polling
+- [x] Terminal status evaluates to `ACCEPTED` with runtime and memory stats
+- [x] User login/registration persists JWT in `localStorage` with Axios interceptors
+- [x] Production bundle builds with zero TypeScript errors (`client/dist` generated)
+- [ ] Explicit user confirmation to proceed to Phase 9 (Containerization, Nginx Reverse Proxy & Production Deployment)

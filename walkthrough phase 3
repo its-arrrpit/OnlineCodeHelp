@@ -1,0 +1,189 @@
+# Phase 3 Walkthrough — Submission System & Execution Engine
+
+## 1. What Was Built
+
+In Phase 3, we built the core code evaluation pipeline: the **Submission State Machine**, the **Asynchronous Submission APIs**, and a modular **Code Execution Engine** supporting multiple languages (Python, Java, C++).
+
+### Components Created:
+
+| Component | Files | Purpose |
+|---|---|---|
+| **Execution Engine Contracts** | [types.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/execution/types.ts) | Defines `TestCaseData`, `SingleRunResult`, and `ExecutionResult` interfaces. |
+| **Executor Abstraction** | [BaseExecutor.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/execution/executors/BaseExecutor.ts) | Abstract class managing temporary working directories, process spawning, strict timeout enforcement, and output normalization. |
+| **Language Runners** | `PythonExecutor.ts`<br>`CppExecutor.ts`<br>`JavaExecutor.ts` | Language-specific compilation (`javac`, `g++`) and execution (`python -u`, `java`, binary). |
+| **Execution Coordinator** | [ExecutionEngine.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/execution/ExecutionEngine.ts) | Strategy-pattern evaluator implementing fail-fast test case execution, metric tracking, and cleanup. |
+| **Submission State Machine** | [submission.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/submission.service.ts) | State machine transition guards (`QUEUED` → `RUNNING` → terminal states) and non-blocking background dispatch. |
+| **Submission Controller & Routes** | `submission.controller.ts`<br>`submission.routes.ts` | `POST /api/submissions` (submit), `GET /api/submissions/:id` (polling), and `GET /api/submissions/me` / `/api/users/me/submissions` (history). |
+
+---
+
+## 2. Why It Was Built
+
+1. **Non-Blocking Architecture**: Compiling and running code against multiple test cases takes seconds. If the API waited for execution synchronously before sending an HTTP response, client connections would freeze, threads would block, and the server would choke under minimal load. Returning `{ submissionId, status: "QUEUED" }` immediately allows the client to poll or subscribe while the backend works in the background.
+2. **Strict State Machine**: Submissions must undergo an orderly, auditable transition:
+   `QUEUED` → `RUNNING` → terminal status (`ACCEPTED`, `WRONG_ANSWER`, `TIME_LIMIT_EXCEEDED`, `COMPILATION_ERROR`, `RUNTIME_ERROR`, `SYSTEM_ERROR`).
+   Terminal states are strictly immutable; once a submission is evaluated, its outcome cannot be corrupted or overridden.
+3. **Fail-Fast Evaluation**: When a program fails on test case #1, running it on 50 more test cases wastes server CPU and memory. The engine aborts on the first failed test case and records `failedTestCaseIndex`.
+
+---
+
+## 3. Important Code & Deep Dive
+
+### 3.1 The Submission State Machine (`submission.service.ts`)
+```typescript
+const VALID_TRANSITIONS: Record<SubmissionStatus, SubmissionStatus[]> = {
+  [SubmissionStatus.QUEUED]: [
+    SubmissionStatus.RUNNING,
+    SubmissionStatus.SYSTEM_ERROR,
+  ],
+  [SubmissionStatus.RUNNING]: [
+    SubmissionStatus.ACCEPTED,
+    SubmissionStatus.WRONG_ANSWER,
+    SubmissionStatus.TIME_LIMIT_EXCEEDED,
+    SubmissionStatus.MEMORY_LIMIT_EXCEEDED,
+    SubmissionStatus.COMPILATION_ERROR,
+    SubmissionStatus.RUNTIME_ERROR,
+    SubmissionStatus.SYSTEM_ERROR,
+  ],
+  // Terminal states cannot transition to anything
+  [SubmissionStatus.ACCEPTED]: [],
+  [SubmissionStatus.WRONG_ANSWER]: [],
+  [SubmissionStatus.TIME_LIMIT_EXCEEDED]: [],
+  [SubmissionStatus.MEMORY_LIMIT_EXCEEDED]: [],
+  [SubmissionStatus.COMPILATION_ERROR]: [],
+  [SubmissionStatus.RUNTIME_ERROR]: [],
+  [SubmissionStatus.SYSTEM_ERROR]: [],
+};
+```
+*Why this matters:* In a high-concurrency system with retries, workers, or duplicate requests, state machine guards guarantee that a finished submission can never be moved back into `RUNNING` or `QUEUED`.
+
+### 3.2 Output Normalization & Comparison (`BaseExecutor.ts`)
+```typescript
+public compareOutput(actual: string, expected: string): boolean {
+  return this.normalizeOutput(actual) === this.normalizeOutput(expected);
+}
+
+protected normalizeOutput(output: string): string {
+  return output
+    .replace(/\r\n/g, '\n')       // Convert Windows line breaks to Unix
+    .split('\n')
+    .map((line) => line.trimEnd()) // Remove trailing spaces on lines
+    .join('\n')
+    .trim();                       // Remove trailing blank lines
+}
+```
+*Why this matters:* Different operating systems and compilers produce subtle differences in line endings (`\r\n` on Windows vs `\n` on Linux) and trailing spaces. Without normalization, correct solutions would falsely fail due to invisible whitespace differences.
+
+### 3.3 Safe Process Spawning with Timeout Guard (`BaseExecutor.ts`)
+```typescript
+const timer = setTimeout(() => {
+  timedOut = true;
+  child.kill('SIGKILL');
+}, timeLimitMs);
+```
+*Why this matters:* If a user submits `while True: pass`, a synchronous or unguarded process would run indefinitely, consume 100% of a CPU core, and starve the server. The timer guarantees that the child process is terminated if it exceeds `timeLimitMs`, returning `TIME_LIMIT_EXCEEDED`.
+
+---
+
+## 4. Key System Design Concepts Involved
+
+1. **Strategy Pattern (Extensible Architecture)**:
+   - `ExecutionEngine` defines the high-level evaluation algorithm.
+   - `BaseExecutor` defines the contract for language runners (`compile`, `run`).
+   - Subclasses (`PythonExecutor`, `CppExecutor`, `JavaExecutor`) encapsulate language-specific compiler commands and flags.
+   - Adding Rust, Go, or JavaScript in the future requires writing only one new class without modifying existing judge logic.
+2. **Asynchronous Polling Pattern**:
+   - `POST /api/submissions` returns HTTP `201 Created` with `{ id, status: "QUEUED" }` in under 10ms.
+   - The frontend polls `GET /api/submissions/:id` every 1–2 seconds until the status reaches a terminal state.
+3. **Fail-Fast Loop**:
+   - The judge executes test cases sequentially. The moment a test case fails (or times out), execution halts immediately and returns the verdict and the failing test case index.
+4. **Defense in Depth Cleanup (`finally`)**:
+   - Code artifacts and temporary directories are wiped inside a `finally` block, ensuring no disk space leaks even if an unhandled exception or process termination occurs.
+
+---
+
+## 5. Important Trade-offs
+
+| Decision | Alternative Considered | Trade-off & Justification |
+|---|---|---|
+| **`setImmediate` background dispatch in Phase 3** | Synchronous execution | Synchronous execution would block HTTP connections for seconds. `setImmediate` provides non-blocking async execution inside Node.js now, perfectly matching the async contract that will transition to Redis/BullMQ in Phase 5. |
+| **Fail-fast on first failing test case** | Run all test cases regardless | Running all test cases gives complete stats (e.g. "passed 8/10"), but consumes up to 10x more CPU/time on bad submissions. Fail-fast protects server compute while giving competitive programming-standard feedback. |
+| **Per-testcase process spawn** | Long-running interactive process | Spawning a fresh process per test case resets process memory and state, preventing side effects between test cases (e.g. static variables or memory leaks). Trade-off: Small startup overhead per process, negligible for our time limits. |
+
+---
+
+## 6. Verification Results
+
+All verdict scenarios were tested and verified against the live server:
+
+1. **Immediate Response**: `POST /api/submissions` returned `{ status: "QUEUED" }` in 8ms.
+2. **Correct Solution**: Python Two Sum implementation passed all test cases and returned `ACCEPTED` in 23ms.
+3. **Output Mismatch**: Incorrect solution returned `WRONG_ANSWER` with `failedTestCaseIndex: 0`.
+4. **Runtime Crash**: `ZeroDivisionError` returned `RUNTIME_ERROR` with stack trace captured in `errorOutput`.
+5. **Infinite Loop**: `while True: pass` was cleanly terminated at the 2000ms threshold, returning `TIME_LIMIT_EXCEEDED`.
+6. **Compilation Error**: Broken Java code evaluated via `javac` returned `COMPILATION_ERROR` with compiler diagnostics.
+7. **History APIs**: Both `GET /api/submissions/me` and `GET /api/users/me/submissions` returned paginated user history.
+8. **Authorization Security**: Regular User B attempting to view Alice's submission was blocked with `403 Forbidden`; Admins were permitted.
+9. **Strict Compilation**: `npm run build` compiled with zero errors in strict mode.
+
+---
+
+## 7. Interview Questions & Model Answers
+
+### Q1: Why should an online judge never execute user code synchronously in the HTTP request handler?
+**Model Answer:**
+> "Compiling and running untrusted code against multiple test cases takes seconds. If handled synchronously in the request-response cycle, the HTTP server thread/connection is blocked for the duration of execution. Under concurrent load, the connection pool quickly exhausts, leading to request timeouts and severe Denial of Service for all users. Decoupling submission creation from execution allows the API server to remain responsive, returning a submission ID immediately."
+
+### Q2: What is a Submission State Machine, and why are terminal states immutable?
+**Model Answer:**
+> "A state machine enforces that a submission transitions through valid states: `QUEUED` → `RUNNING` → terminal outcome (`ACCEPTED`, `WRONG_ANSWER`, `TLE`, etc.). Terminal states are immutable to maintain idempotency and prevent race conditions. If a job is retried or a late worker reports a result after another process has already finalized the outcome, the state machine rejects any modification to a terminal record."
+
+### Q3: How do you prevent a user's infinite loop from hanging the evaluation process?
+**Model Answer:**
+> "In `BaseExecutor`, we spawn the execution process with a strict timeout timer based on the problem's `timeLimitMs`. If the timer expires before the process closes, we mark `timedOut = true`, send a `SIGKILL` to forcefully terminate the process tree, and record the verdict as `TIME_LIMIT_EXCEEDED`."
+
+### Q4: Why is output normalization necessary when comparing test case results?
+**Model Answer:**
+> "Different operating systems and programming languages format newlines differently (e.g. `\r\n` on Windows vs `\n` on POSIX systems). Users might also accidentally leave trailing spaces before newlines. Output normalization converts CRLF to LF, trims trailing whitespace on each line, and strips trailing empty lines, ensuring that submissions are judged on logical correctness rather than platform-specific whitespace quirks."
+
+### Q5: How does the Strategy Pattern benefit our code execution architecture?
+**Model Answer:**
+> "We separate the evaluation orchestration (`ExecutionEngine`) from the language-specific execution details (`BaseExecutor` and its subclasses `PythonExecutor`, `CppExecutor`, `JavaExecutor`). The engine manages the lifecycle and test-case loop uniformly, while each executor handles compilation flags, source naming, and command arguments. This adheres to the Open/Closed Principle: supporting a new language like Go or Rust only requires adding a new subclass without touching judge logic."
+
+### Q6: Why do we use fail-fast evaluation across test cases?
+**Model Answer:**
+> "In an online code judge, a submission must pass all test cases to receive an `ACCEPTED` verdict. If a submission fails test case #1 due to Wrong Answer or Time Limit Exceeded, running the remaining 50 test cases is a waste of CPU, memory, and container resources. Fail-fast terminates evaluation immediately upon the first failure, preserving compute resources for other queued submissions."
+
+### Q7: How does the polling mechanism work between client and server?
+**Model Answer:**
+> "The client sends `POST /api/submissions` and receives an immediate `201 Created` with the submission ID and status `QUEUED`. The client then periodically polls `GET /api/submissions/:id` (typically with exponential backoff starting at 1-2 seconds). Once the status transitions away from `QUEUED` and `RUNNING` to a terminal state (`ACCEPTED`, `WRONG_ANSWER`, etc.), the client stops polling and displays the verdict."
+
+### Q8: What security issues exist with executing user code directly on the host machine using child_process?
+**Model Answer:**
+> "Local process spawning has no real sandboxing: malicious code could read environment variables, access sensitive files on the filesystem, spawn fork bombs to exhaust process table slots, open raw network sockets, or make unauthorized system calls. That is why local execution is only a stepping stone; in Phase 4, we containerize every execution inside ephemeral Docker sandboxes with `--network=none`, `--memory`, `--cpus`, and `--pids-limit`."
+
+---
+
+## 8. What You Should Personally Understand Before Moving to Phase 4
+
+Before moving to Docker Execution:
+- [ ] Understand why local process spawning is dangerous for untrusted code and why Docker containers are necessary.
+- [ ] How the strategy pattern separates language execution from test-case looping.
+- [ ] How `child_process.spawn` streams `stdin`, captures `stdout`/`stderr`, and handles timeout signals (`SIGKILL`).
+- [ ] How the `failedTestCaseIndex` helps candidates debug where their logic failed.
+
+---
+
+## Ready for Phase 4!
+In **Phase 4 (Docker Execution)**, we will:
+1. Build lightweight Docker sandbox images for Java, C++, and Python.
+2. Implement `DockerSandbox` to spin up isolated containers per execution run.
+3. Enforce strict isolation limits:
+   - `--network=none` (no Internet access)
+   - `--memory=256m` (strict RAM ceiling)
+   - `--cpus=1.0` (CPU quota)
+   - `--pids-limit=64` (fork bomb defense)
+   - Read-only root filesystem with ephemeral `/tmp`
+4. Connect `ExecutionEngine` to run inside Docker sandboxes rather than the host OS.
+
+Say **"proceed to Phase 4"** whenever you're ready!

@@ -1,0 +1,180 @@
+# Phase 2 Walkthrough — Authentication & Problems Management
+
+## 1. What Was Built
+
+In Phase 2, we built a production-grade, secure authentication system and full problem management (CRUD) system with role-based access control.
+
+### Components Created:
+
+| Component | Files | Purpose |
+|---|---|---|
+| **Validation Schemas** | [auth.schema.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/schemas/auth.schema.ts)<br>[problem.schema.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/schemas/problem.schema.ts)<br>[testcase.schema.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/schemas/testcase.schema.ts) | Strict runtime input validation using Zod with compile-time type inference (`z.infer`). |
+| **Authentication Core** | [auth.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/auth.service.ts) | Password hashing via `bcrypt` (10 salt rounds), secure token signing with `jsonwebtoken`, and email enumeration prevention. |
+| **Auth & Access Control** | [auth.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/middleware/auth.ts)<br>[authorize.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/middleware/authorize.ts) | `authenticate` verifies Bearer JWT and populates `req.user`. `authorize('ADMIN')` enforces Role-Based Access Control (RBAC). |
+| **Problem & TestCase Services** | [problem.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/problem.service.ts)<br>[testcase.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/testcase.service.ts) | High-performance queries using `Promise.all` for pagination, cascade deletes, and security rules on hidden test cases. |
+| **Controllers & Routes** | `auth.controller.ts`, `auth.routes.ts`<br>`problem.controller.ts`, `problem.routes.ts`<br>`testcase.controller.ts`, `testcase.routes.ts` | Clean REST endpoints connected through express `Router` and wrapped with `asyncHandler`. |
+
+---
+
+## 2. Why It Was Built
+
+1. **Security First**: Code execution platforms face hostile users. We must establish identity (Authentication) and permissions (Authorization) before allowing any user to submit code or administer problems.
+2. **Data Privacy (Hidden Test Cases)**: If regular users could query all test cases via the API, they could write code that simply hard-codes outputs for every test case. We enforce at the service layer that only `isSample: true` test cases are returned to regular users.
+3. **Controller-Service-Repository Pattern**: Keeping business logic in `services/` makes our codebase modular, testable without HTTP mocks, and clean for technical interview discussions.
+
+---
+
+## 3. Important Code & Deep Dive
+
+### 3.1 Preventing Email Enumeration (`auth.service.ts`)
+```typescript
+const user = await prisma.user.findUnique({ where: { email } });
+if (!user) {
+  throw ApiError.unauthorized('Invalid email or password');
+}
+
+const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+if (!isPasswordValid) {
+  throw ApiError.unauthorized('Invalid email or password');
+}
+```
+*Why this matters:* If we returned "Email not found" vs "Wrong password", an attacker could feed a dictionary of emails to determine which accounts exist on the platform. Returning the identical message prevents user enumeration.
+
+### 3.2 Dynamic Test Case Visibility (`problem.service.ts`)
+```typescript
+export async function getProblemById(id: string, isAdmin = false) {
+  const problem = await prisma.problem.findUnique({
+    where: { id },
+    include: {
+      testCases: {
+        where: isAdmin ? {} : { isSample: true }, // Users only see samples
+        orderBy: { orderIndex: 'asc' },
+        select: {
+          id: true,
+          input: true,
+          expectedOutput: true,
+          isSample: true,
+          orderIndex: true,
+          ...(isAdmin ? { timeLimitMs: true, memoryLimitMb: true } : {}),
+        },
+      },
+    },
+  });
+  ...
+}
+```
+*Why this matters:* Even if a clever user examines network responses in Chrome DevTools, hidden test cases are filtered out in PostgreSQL by Prisma. They never leave the server.
+
+### 3.3 Multi-Target Zod Middleware (`validate.ts`)
+```typescript
+export function validate(schema: ZodSchema, source: 'body' | 'query' | 'params' = 'body') {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    try {
+      const parsed = schema.parse(req[source]);
+      req[source] = parsed;
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const details = error.errors.map((e) => ({
+          field: e.path.join('.'),
+          message: e.message,
+        }));
+        throw ApiError.badRequest('Validation failed', details);
+      }
+      throw error;
+    }
+  };
+}
+```
+*Why this matters:* Zod coerces and validates string query parameters (e.g., `?page=2` becomes `number 2`) and guarantees type safety before entering controllers.
+
+---
+
+## 4. Key System Design Concepts Involved
+
+1. **Stateless Authentication (JWT)**:
+   - Traditional session auth stores session state in DB/Redis memory for every logged-in user.
+   - JWT tokens are self-contained and cryptographically signed. Any backend instance with `JWT_SECRET` can verify the token without querying a database, making horizontal scaling easy.
+2. **Role-Based Access Control (RBAC)**:
+   - User identity contains a `Role` (`USER` vs `ADMIN`).
+   - Middleware intercepts incoming requests and rejects unauthorized requests early with HTTP `403 Forbidden`.
+3. **Database Pagination & Concurrent Queries (`Promise.all`)**:
+   - Instead of fetching all problems into memory, we use SQL `OFFSET` (`skip`) and `LIMIT` (`take`).
+   - We query the paginated rows and the total count in parallel using `Promise.all([findMany, count])` so both queries run concurrently in PostgreSQL.
+
+---
+
+## 5. Important Trade-offs
+
+| Decision | Alternative Considered | Trade-off & Justification |
+|---|---|---|
+| **JWT in Authorization header** | Server-side sessions in Redis | JWT requires no database lookup per request (faster, stateless). Trade-off: Token revocation before expiration requires a denylist. For our scale, a 7-day token is optimal. |
+| **bcrypt (10 rounds)** | Argon2 or PBKDF2 | bcrypt is battle-tested, standard across Node.js backend interviews, and resilient against GPU cracking. 10 rounds takes ~100ms per hash, balancing safety and server CPU usage. |
+| **Cascade delete on Problems** | Soft deletes (`isDeleted = true`) | Cascade delete (`onDelete: Cascade` in PostgreSQL) keeps the schema simple and prevents orphan test cases. Soft deletes complicate queries with `where: { isDeleted: false }`. |
+
+---
+
+## 6. Verification Results
+
+All tests were executed against the live server and verified:
+- **POST `/api/auth/register`**: Validates fields; hashes password; returns created user and JWT.
+- **POST `/api/auth/login`**: Authenticates user; returns JWT.
+- **GET `/api/auth/me`**: Returns authenticated user profile when passed `Bearer <token>`.
+- **Validation 400**: Returns detailed field-level error messages for invalid inputs.
+- **Auth 401**: Rejects requests lacking valid Bearer tokens.
+- **RBAC 403**: Rejects `USER` trying to call admin-only endpoints (`POST /api/problems`).
+- **Admin problem & test case creation**: Succeeded (`201 Created`).
+- **Hidden test case shielding**: Regular users receive only 2 sample test cases for Two Sum; admins receive all 4 test cases.
+- **Strict Compilation**: `npm run build` completed with zero errors under TypeScript strict mode.
+
+---
+
+## 7. Interview Questions & Model Answers
+
+### Q1: What is the difference between Authentication and Authorization?
+**Model Answer:**
+> "Authentication answers *'Who are you?'* by verifying credentials such as email and password with bcrypt and issuing a cryptographic JWT. Authorization answers *'What are you permitted to do?'* by evaluating the user's role (e.g. `USER` vs `ADMIN`) against route-level permissions before granting access."
+
+### Q2: Why did you use JWT instead of session cookies?
+**Model Answer:**
+> "JWTs are stateless. The token contains the claims (`userId`, `role`) signed by a secret key. When scaling our API horizontally across multiple servers or containers, any API instance can authenticate requests without needing a shared sticky session store or database query on every HTTP call."
+
+### Q3: How do you prevent email enumeration attacks during login?
+**Model Answer:**
+> "If a login endpoint returns 'Email does not exist' for an unregistered email, but 'Incorrect password' for a registered one, attackers can harvest existing user emails. We mitigate this by returning a generic `401 Unauthorized` with the message `'Invalid email or password'` in both cases."
+
+### Q4: Why is password salting necessary with bcrypt?
+**Model Answer:**
+> "A salt is a unique random string appended to the password before hashing. Without a salt, two users with the same password (`password123`) would have identical hash values, making the database vulnerable to precomputed Rainbow Table attacks. bcrypt generates a unique salt per hash automatically."
+
+### Q5: How do you protect test cases from being seen by candidates?
+**Model Answer:**
+> "We split test cases into sample and hidden cases via the `isSample` boolean flag in PostgreSQL. In the problem retrieval service, we check the caller's role: admins receive all test cases with resource limits, while normal users only receive records where `isSample: true`. Filtering occurs directly in the database query."
+
+### Q6: How does pagination work in your problem listing endpoint?
+**Model Answer:**
+> "We use SQL `OFFSET` and `LIMIT` through Prisma's `skip: (page - 1) * limit` and `take: limit`. To return pagination metadata (such as `totalPages`), we run `findMany` and `count` simultaneously using `Promise.all`, avoiding sequential query roundtrips to PostgreSQL."
+
+### Q7: Why do we need Zod if TypeScript already provides types?
+**Model Answer:**
+> "TypeScript types only exist at compile-time and are completely erased during JavaScript execution. They cannot prevent a client from sending malformed JSON at runtime. Zod validates incoming HTTP payloads at runtime and infers static TypeScript types using `z.infer`, giving us compile-time safety and runtime validation from a single source of truth."
+
+---
+
+## 8. What You Should Personally Understand Before Moving to Phase 3
+
+Before proceeding to the Submission System, make sure you are comfortable with:
+- [ ] How `jwt.sign()` and `jwt.verify()` validate payload signatures using a shared secret.
+- [ ] How Express middleware chaining works (`validate -> authenticate -> authorize -> handler -> errorHandler`).
+- [ ] Why `Promise.all` improves performance when executing multiple independent database queries.
+- [ ] Why hidden test cases must be filtered out in the database query rather than in JavaScript.
+
+---
+
+## Ready for Phase 3!
+In **Phase 3**, we will build:
+1. The **Submission model and APIs** (`POST /api/submissions`, `GET /api/submissions/:id`, `GET /api/users/me/submissions`).
+2. The **Submission State Machine** (`QUEUED` → `RUNNING` → verdicts).
+3. A **Local Execution Engine** with language executors (Java, C++, Python) to test compilation, execution against test cases, time limits, and output comparison before containerizing into Docker in Phase 4.
+
+Say **"proceed to Phase 3"** whenever you're ready!

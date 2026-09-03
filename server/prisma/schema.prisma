@@ -1,0 +1,153 @@
+// ===================================================================
+// Prisma Schema — Online Code Judge
+// ===================================================================
+// This file defines our database tables, relationships, and indexes.
+// Prisma reads this file and:
+//   1. Generates TypeScript types for every model
+//   2. Creates SQL migrations to update the database
+//   3. Provides a type-safe query client (PrismaClient)
+// ===================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────
+
+/// User roles. USER can solve problems. ADMIN can manage problems + test cases.
+enum Role {
+  USER
+  ADMIN
+}
+
+/// Problem difficulty levels.
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+/// Supported programming languages for submissions.
+enum Language {
+  JAVA
+  CPP
+  PYTHON
+}
+
+/// Submission status — follows a strict state machine.
+/// Valid transitions:
+///   QUEUED → RUNNING → (any terminal state)
+///   QUEUED → SYSTEM_ERROR (if worker never picks it up)
+/// Terminal states: ACCEPTED, WRONG_ANSWER, TIME_LIMIT_EXCEEDED,
+///   MEMORY_LIMIT_EXCEEDED, COMPILATION_ERROR, RUNTIME_ERROR, SYSTEM_ERROR
+enum SubmissionStatus {
+  QUEUED
+  RUNNING
+  ACCEPTED
+  WRONG_ANSWER
+  TIME_LIMIT_EXCEEDED
+  MEMORY_LIMIT_EXCEEDED
+  COMPILATION_ERROR
+  RUNTIME_ERROR
+  SYSTEM_ERROR
+}
+
+// ─── Models ─────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+
+  // Relations
+  submissions Submission[]
+
+  // Maps to the "users" table in PostgreSQL
+  @@map("users")
+}
+
+model Problem {
+  id          String     @id @default(uuid())
+  title       String
+  description String     @db.Text   // @db.Text = PostgreSQL TEXT type (unlimited length)
+  difficulty  Difficulty
+  constraints String?    @db.Text   // nullable — some problems may not have constraints
+  examples    String?    @db.Text   // sample input/output shown to users
+  isPublished Boolean    @default(false)
+  createdBy   String                // UUID of the admin who created this
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt // Prisma auto-updates this on every save
+
+  // Relations
+  testCases   TestCase[]
+  submissions Submission[]
+
+  // Index: Problem browsing queries WHERE isPublished = true ORDER BY createdAt DESC
+  @@index([isPublished, createdAt(sort: Desc)])
+  @@map("problems")
+}
+
+model TestCase {
+  id             String  @id @default(uuid())
+  problemId      String
+  input          String  @db.Text
+  expectedOutput String  @db.Text
+  timeLimitMs    Int     @default(2000)   // 2 seconds default
+  memoryLimitMb  Int     @default(256)    // 256 MB default
+  isSample       Boolean @default(false)  // true = visible to users as example
+  orderIndex     Int     @default(0)      // controls execution order
+  createdAt      DateTime @default(now())
+
+  // Relations
+  problem Problem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+
+  // Index: workers fetch all test cases for a problem
+  @@index([problemId])
+  @@map("test_cases")
+}
+
+model Submission {
+  id                  String           @id @default(uuid())
+  userId              String
+  problemId           String
+  language            Language
+  sourceCode          String           @db.Text
+  status              SubmissionStatus @default(QUEUED)
+  executionTimeMs     Int?             // nullable — only set after execution
+  memoryUsedMb        Int?             // nullable — only set after execution
+  errorOutput         String?          @db.Text  // compiler/runtime errors
+  failedTestCaseIndex Int?             // which test case failed (0-indexed)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id])
+  problem Problem @relation(fields: [problemId], references: [id])
+
+  // === Index Justifications ===
+  //
+  // [userId, createdAt DESC]:
+  //   Query: "Show me my recent submissions" → WHERE userId = ? ORDER BY createdAt DESC
+  //   This is the most common user query. Composite index avoids a separate sort step.
+  //
+  // [problemId]:
+  //   Query: "Show all submissions for this problem" → WHERE problemId = ?
+  //   Used on problem detail pages and admin analytics.
+  //
+  // [status]:
+  //   Query: Workers may query QUEUED submissions as a fallback.
+  //   Also used for observability: counting submissions by status.
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([problemId])
+  @@index([status])
+  @@map("submissions")
+}

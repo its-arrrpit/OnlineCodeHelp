@@ -1,0 +1,217 @@
+# Phase 5 Walkthrough — Asynchronous Architecture / Redis Queue
+
+## 1. What Was Built
+
+In Phase 5, we completely decoupled code evaluation from the HTTP API server by introducing an asynchronous **Producer-Consumer architecture** powered by **Redis** and **BullMQ**.
+
+### Components Created & Integrated:
+
+| Component | File Path | Role |
+|---|---|---|
+| **BullMQ Queue Definition** | [src/queue/submissionQueue.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/queue/submissionQueue.ts) | Defines the distributed `submission-queue`, job payload types (`SubmissionJobData`), Redis connection tuning (`maxRetriesPerRequest: null`), and job cleanup limits (`removeOnComplete`, `removeOnFail`). |
+| **Submission Producer** | [src/queue/submissionProducer.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/queue/submissionProducer.ts) | Enqueues jobs to Redis with deterministic `jobId` deduplication and returns immediate control to the API caller. |
+| **Submission Consumer** | [src/queue/submissionConsumer.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/queue/submissionConsumer.ts) | Configures the BullMQ `Worker` with concurrency control, event lifecycle listeners (`active`, `completed`, `failed`, `error`), and dispatches jobs to `executeSubmissionAsync()`. |
+| **Standalone Worker Process** | [src/worker.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/worker.ts) | Independent OS process (`npm run dev:worker`) dedicated to running compilers and Docker containers with graceful draining (`worker.close()`) on `SIGINT`/`SIGTERM`. |
+| **Decoupled API Server** | [src/services/submission.service.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/services/submission.service.ts) & [src/index.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/index.ts) | Removed all in-process execution (`setImmediate`). `POST /api/submissions` writes to DB, pushes to BullMQ, and returns `HTTP 201 Created` in **< 15ms**. |
+
+---
+
+## 2. Why It Was Built
+
+In any high-scale online coding platform (LeetCode, HackerRank, Codeforces), **code execution is inherently slow, CPU-intensive, and unpredictable**:
+1. **HTTP Starvation**: Running user code inside Express HTTP request threads blocks connections. If 50 users submit C++ or Java code simultaneously, the event loop or connection backlog is starved, making the website unresponsive for all other users browsing problems or logging in.
+2. **Blast Radius Isolation**: If compilation or container execution spikes to 100% CPU or crashes due to OS resource limits, the API server must not be affected.
+3. **Traffic Spikes & Contests**: During weekly contests, thousands of users submit within minutes. A message queue acts as an elastic **shock absorber (buffer)** that absorbs the traffic burst instantly and processes items at a steady, sustainable pace.
+4. **Independent Horizontal Scaling**: We can scale worker processes from 2 to 20 during peak hours without scaling the lightweight API server.
+
+---
+
+## 3. Architecture & Data Flow
+
+```
+[ Client Browser ]
+        │
+        │ 1. POST /api/submissions (Code, ProblemId, Lang)
+        ▼
+[ Express API Server ]  (Fast I/O Bound)
+        │
+        ├─► 2. Save Submission in PostgreSQL (status = 'QUEUED')
+        ├─► 3. Enqueue Job into Redis Queue (BullMQ Producer)
+        │
+        ▼ 4. Immediate HTTP 201 Created { id, status: 'QUEUED' } (10-15 ms)
+[ Client Browser ]  (Starts polling GET /api/submissions/:id)
+        │
+        │
+================= ASYNCHRONOUS BOUNDARY (REDIS) =================
+        │
+        ▼ 5. Worker dequeues job via blocking Redis connection (BLMOVE)
+[ Worker Process ] (src/worker.ts - CPU/Compute Bound)
+        │
+        ├─► 6. Update status = 'RUNNING' in PostgreSQL
+        ├─► 7. Launch Docker Sandbox (`--cpus=1.0`, `--memory=256m`, `--network=none`)
+        ├─► 8. Compile (if C++/Java), feed test cases via stdin, evaluate stdout
+        ├─► 9. Update status = 'ACCEPTED'/'WRONG_ANSWER'/etc. in PostgreSQL
+        │
+        ▼ 10. Mark job COMPLETED in Redis
+```
+
+---
+
+## 4. Important Code & Concepts
+
+### 4.1 Queue Producer with Deduplication (`submissionProducer.ts`)
+```typescript
+export async function addSubmissionJob(submissionId: string): Promise<Job<SubmissionJobData>> {
+  const job = await submissionQueue.add(
+    'evaluate-submission',
+    { submissionId },
+    {
+      // Deduplication: BullMQ guarantees that if a job with this ID is
+      // already in the queue, a duplicate will not be created.
+      jobId: submissionId,
+      attempts: 1, // User code errors are terminal, not retried
+    }
+  );
+  return job;
+}
+```
+**Why `jobId: submissionId` matters:**
+If a network lag causes the client or an API retry to call the endpoint twice with the same submission record, BullMQ discards the second duplicate key in Redis, preventing redundant, expensive Docker runs.
+
+### 4.2 Dedicated Redis Connections & `maxRetriesPerRequest: null`
+BullMQ workers use Redis blocking commands (`BLMOVE` / `BRPOPLPUSH`) to sleep until a job arrives. Standard Redis client libraries throw errors if blocking commands queue up behind regular commands. Configuring `maxRetriesPerRequest: null` in ioredis allows BullMQ to manage connection reconnections and blocking waits safely.
+
+### 4.3 Controlled Worker Concurrency
+In `submissionConsumer.ts`:
+```typescript
+export function createSubmissionWorker(concurrency = 2): Worker<SubmissionJobData> {
+  return new Worker<SubmissionJobData>(
+    SUBMISSION_QUEUE_NAME,
+    processSubmissionJob,
+    {
+      connection: redisConnectionOptions,
+      concurrency, // Processes up to 2 submissions in parallel per worker process
+    }
+  );
+}
+```
+Without concurrency limits, a single worker machine running 50 Docker containers simultaneously would induce CPU throttling, thrash memory, and fail execution time limits artificially.
+
+### 4.4 Graceful Draining & Shutdown (`worker.ts`)
+```typescript
+async function shutdown(signal: string): Promise<void> {
+  logger.info({ signal }, 'Worker received shutdown signal — draining active jobs...');
+  if (workerInstance) {
+    // BullMQ worker.close() stops accepting new jobs from Redis
+    // and waits for the currently running Docker containers to complete!
+    await workerInstance.close();
+  }
+  await disconnectDatabase();
+  await disconnectRedis();
+  process.exit(0);
+}
+```
+**Why this is crucial in production:**
+When deploying new worker code in Kubernetes or Docker, the orchestrator sends `SIGTERM`. If the process immediately terminates, active user submissions get abandoned mid-execution. `await worker.close()` pauses pulling from the queue and waits for in-flight evaluations to complete and write their verdict to PostgreSQL.
+
+---
+
+## 5. Verification & Test Results
+
+### Test 1: Asynchronous Lifecycle & Response Speed
+- **API Endpoint:** `POST /api/submissions`
+- **Response Time:** **13 ms** (down from 300ms+ in Phase 4)
+- **Initial Status Returned:** `QUEUED`
+- **Polling Loop:** Poll 1 (`RUNNING`) → Poll 2 (`ACCEPTED`) in 1.2s.
+
+### Test 2: Worker Docker Execution via Redis
+Worker console output captured from `worker.ts`:
+```
+[INFO] Connected to Redis
+[INFO] Connected to PostgreSQL
+[INFO] 🚀 Online Code Judge Worker started successfully — listening for submission jobs (concurrency: 2, useDocker: true)
+[INFO] Job is now ACTIVE (jobId: 1d851ef4-02fb-411c-8a52-38f3d6913d72)
+[INFO] Submission processed successfully (status: ACCEPTED, timeMs: 303)
+[INFO] Job COMPLETED (jobId: 1d851ef4-02fb-411c-8a52-38f3d6913d72)
+```
+
+### Test 3: Concurrent Batch Execution (Python, C++, Java)
+We submitted 3 distinct solutions simultaneously across Python, C++, and Java:
+- **Total API Enqueue Time for 3 submissions:** **49 ms**
+- **Worker Execution Results:**
+  - **Python:** `ACCEPTED` (289 ms, 16 MB)
+  - **C++:** `ACCEPTED` (361 ms, 16 MB)
+  - **Java:** `ACCEPTED` (354 ms, 16 MB)
+- All 3 jobs completed successfully with zero job loss and zero container leaks.
+
+### Test 4: Production Build
+- `npm run build` passed with zero errors under strict TypeScript compiler settings.
+
+---
+
+## 6. Trade-Offs & Design Decisions
+
+| Decision | What We Chose | Alternative Considered | Trade-Off & Justification |
+|---|---|---|---|
+| **Queue Broker** | **Redis + BullMQ** | RabbitMQ / Apache Kafka / AWS SQS | BullMQ provides sub-millisecond job distribution, native Redis data structures, job deduplication, and low operational overhead. Kafka would be heavy overkill for a submission queue; RabbitMQ adds an additional service dependency. |
+| **Result Retrieval** | **Short Polling** (`GET /api/submissions/:id`) | WebSockets / Server-Sent Events (SSE) | Polling is stateless, survives reverse-proxy reconnects, requires zero persistent TCP socket state on the API servers, and is straightforward to scale behind load balancers. WebSockets add connection state complexity. |
+| **Worker Boundary** | **Separate OS Process** (`src/worker.ts`) | Shared in-process threads / cluster module | A separate process guarantees fault isolation and allows worker auto-scaling independently from the API server. |
+| **Deduplication Key** | **Database submission UUID as BullMQ `jobId`** | Auto-generated BullMQ job UUID | Matching `jobId` to `submissionId` guarantees idempotency in Redis. If a network blip duplicates an enqueue call, Redis silently deduplicates the job. |
+
+---
+
+## 7. Interview Q&A (Prepare for Technical Rounds)
+
+### Q1: Why did you decouple the API server from the execution engine using a message queue?
+**Model Answer:**
+> "In an online code judge, evaluating code is compute-intensive and can take several seconds due to compilation, Docker initialization, and multiple test cases. If executed synchronously inside the Express request-response cycle, the Node.js event loop or HTTP connection pool would quickly saturate under load. By placing BullMQ and Redis between the API and the workers, the API returns a response in ~15ms with a status of `QUEUED`. The queue acts as a buffer during traffic spikes, and worker processes can scale horizontally based on queue depth."
+
+### Q2: How does BullMQ ensure jobs are not lost if a worker crashes mid-execution?
+**Model Answer:**
+> "BullMQ uses Redis hashes and sorted sets with atomic Lua scripts. When a worker picks up a job, BullMQ moves it from the 'wait' list to the 'active' list and assigns a visibility lock with a heartbeat ('stalled interval'). If the worker crashes or becomes unresponsive, the lock expires. Another worker (or the same worker after reboot) detects the stalled job, moves it back to the queue or marks it failed according to the configured retry policy."
+
+### Q3: What is the difference between horizontal scaling for the API server vs the Worker?
+**Model Answer:**
+> "The API server is I/O-bound: it handles user authentication, CRUD queries in PostgreSQL, and enqueuing jobs to Redis. It benefits from lightweight, burstable instances with fast networking. The worker is CPU- and memory-bound: it compiles C++ and Java code, mounts volumes, and executes Docker containers. Because the worker is stateless and only consumes from Redis, we can independently scale workers on compute-optimized instances during coding contests without touching the API instances."
+
+### Q4: What is graceful draining, and how did you implement it?
+**Model Answer:**
+> "Graceful draining ensures that when an application receives a shutdown signal (`SIGTERM` or `SIGINT`), it stops accepting new work while completing in-flight tasks before shutting down. In our worker entry point (`src/worker.ts`), our signal handlers call `await worker.close()`. BullMQ stops listening for new jobs on the Redis queue and waits for currently running Docker sandboxes to finish execution and write their results to PostgreSQL. Only then are database and Redis connections closed, preventing orphaned jobs."
+
+### Q5: Why did you choose Polling over WebSockets for retrieving submission results?
+**Model Answer:**
+> "For code submissions, evaluation usually takes between 1 to 3 seconds. Short polling every 1 second until a terminal state is reached requires only 2 to 3 HTTP requests per submission. WebSockets require maintaining persistent, stateful TCP connections, which complicates load balancing across multiple API instances (requiring sticky sessions or Redis Pub/Sub backplanes). Polling keeps the API completely stateless and resilient to proxy reconnections."
+
+### Q6: What does the BullMQ `maxRetriesPerRequest: null` configuration do?
+**Model Answer:**
+> "BullMQ workers use blocking Redis commands like `BRPOPLPUSH` or `BLMOVE` to wait for incoming jobs without busy-polling Redis. In the `ioredis` library, `maxRetriesPerRequest` limits how many retries a command will attempt if the connection drops. BullMQ requires this setting to be `null` so that `ioredis` does not throw an error while waiting on a blocking command during network reconnections, allowing BullMQ to manage reconnection and retries internally."
+
+### Q7: What is job deduplication and why is it important in a job queue?
+**Model Answer:**
+> "Job deduplication prevents the same work from being enqueued and executed multiple times. In BullMQ, passing a deterministic `jobId` (in our case, the submission's PostgreSQL UUID) instructs Redis to reject adding another job with that same ID if it is already queued or running. This protects the system from duplicate submissions caused by client retries, double-clicking, or network glitches."
+
+### Q8: What would happen if Redis crashes while submissions are in the queue?
+**Model Answer:**
+> "Redis can be configured with persistence using AOF (Append-Only File) or RDB snapshots. In our Redis configuration, data structures in Redis are persisted to disk. Furthermore, our system design treats PostgreSQL as the ultimate source of truth. Submissions are committed with status `QUEUED` in PostgreSQL before being pushed to Redis. If Redis were to experience total data loss, a recovery reconciliation script can query PostgreSQL for submissions in `QUEUED` status and re-enqueue them."
+
+---
+
+## 8. What You Should Personally Understand Before Moving to Phase 6
+
+Before proceeding to Phase 6 (Reliability & Robustness):
+- [x] Why the API server must never execute user code synchronously.
+- [x] How BullMQ uses Redis data structures (Lists, Sets, Hashes) for distributed queues.
+- [x] How the worker process runs independently from Express with its own connection lifecycle.
+- [x] How graceful draining works and why `worker.close()` is vital for zero-downtime deploys.
+- [x] Why polling is appropriate for short-lived asynchronous tasks.
+
+---
+
+## Ready for Phase 6!
+In **Phase 6 (Reliability & Error Handling)**, we will implement:
+1. **Retry Policies** for infrastructure failures (distinguishing user compilation errors from Docker daemon drops).
+2. **Idempotent Updates & Optimistic Locking** to protect against concurrent state transitions.
+3. **Dead-Letter Queue (DLQ)** for unrecoverable poisoned jobs.
+4. **Worker Crash Recovery & Stalled Job Detection**.
+
+Say **"proceed to Phase 6"** whenever you are ready!

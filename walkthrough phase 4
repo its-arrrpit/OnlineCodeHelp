@@ -1,0 +1,189 @@
+# Phase 4 Walkthrough — Docker Execution & Sandboxing
+
+## 1. What Was Built
+
+In Phase 4, we transitioned the code evaluation engine from host execution into **isolated, ephemeral Docker containers**. Untrusted code submitted by users is now executed within sandboxes with multi-layered Linux kernel security constraints.
+
+### Components Created:
+
+| Component | Files | Purpose |
+|---|---|---|
+| **Sandbox Dockerfiles** | [docker/python/Dockerfile](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/docker/python/Dockerfile)<br>[docker/cpp/Dockerfile](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/docker/cpp/Dockerfile)<br>[docker/java/Dockerfile](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/docker/java/Dockerfile) | Lightweight runner images built on Alpine Linux with non-root low-privilege user (`sandboxuser:1000`). |
+| **Docker Sandbox Manager** | [DockerSandbox.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/execution/DockerSandbox.ts) | Programmatic orchestration of containerized executions with strict resource ceilings (`--cpus`, `--memory`, `--memory-swap`, `--network=none`, `--pids-limit`) and forced cleanup. |
+| **Containerized Runners** | `PythonExecutor.ts`<br>`CppExecutor.ts`<br>`JavaExecutor.ts` | Subclasses compiled and executed inside their respective sandbox images (`ocj-runner-python`, `ocj-runner-cpp`, `ocj-runner-java`). |
+
+---
+
+## 2. Why It Was Built
+
+Running untrusted code directly on the host server is hazardous:
+1. **Network Attacks**: Malicious code could send spam, participate in DDoS attacks, or connect to internal services (PostgreSQL, Redis, cloud metadata services at `169.254.169.254`).
+2. **Resource Exhaustion**: An unchecked infinite loop or memory leak could crash the API server.
+3. **Fork Bombs**: Spawning hundreds of threads or child processes exhausts the host OS process table (`PID table`), freezing the operating system.
+4. **Filesystem Compromise**: An attacker could read `.env` secrets, overwrite source code, or install malware.
+
+By containerizing every execution with Docker, we restrict the code to an ephemeral sandbox that is immediately destroyed upon completion.
+
+---
+
+## 3. Important Code & Deep Dive
+
+### 3.1 Docker Sandbox Isolation Flags (`DockerSandbox.ts`)
+```typescript
+const dockerArgs = [
+  'run',
+  '-i',                                          // Interactive stdin stream for testcases
+  '--name', containerName,                       // Explicit container name for cleanup
+  '--rm',                                        // Automatically remove container on exit
+  '--network=none',                              // Completely disable network interfaces
+  `--memory=${memoryLimitMb}m`,                  // Strict RAM allocation ceiling
+  `--memory-swap=${memoryLimitMb}m`,             // Disable swap (forces immediate OOM kill)
+  `--cpus=${cpuQuota}`,                          // Throttles CPU to 1.0 core
+  `--pids-limit=${pidsLimit}`,                   // Prevents fork bombs by capping max PIDs
+  '-v', `${normalizedHostDir}:/sandbox:rw`,      // Mount only the run directory
+  '-w', '/sandbox',                              // Set execution working directory
+  image,
+  ...command,
+];
+```
+
+*Why these specific flags matter:*
+- `--network=none`: Disables the container's network stack. The only network device inside the container is loopback (`127.0.0.1`). Any attempt to make an outbound TCP/UDP connection fails instantly with `Network unreachable`.
+- `--memory-swap=${limit}m`: By default, Docker allows a container to use equal amounts of disk swap when RAM is full. Setting memory-swap equal to memory disables swapping, so allocating more than 256MB triggers an immediate Out-Of-Memory (OOM) kill rather than thrashing the host disk.
+- `--pids-limit=64`: If user code executes a fork bomb (`while(1) fork()`), the Linux kernel refuses to allocate more than 64 process IDs, shielding the host machine.
+
+### 3.2 Non-Root User in Dockerfile (`docker/python/Dockerfile`)
+```dockerfile
+FROM python:3.11-alpine
+
+# Create a restricted, non-root user
+RUN addgroup -g 1000 sandboxgroup && \
+    adduser -D -u 1000 -G sandboxgroup sandboxuser
+
+WORKDIR /sandbox
+RUN chown -R sandboxuser:sandboxgroup /sandbox
+
+USER sandboxuser
+```
+*Why this matters:* If a container breakout vulnerability exists in the container runtime (runc), running as `root` (UID 0) inside the container can grant root privileges on the host. Running as non-root UID 1000 provides defense-in-depth against privilege escalation.
+
+### 3.3 Leak-Proof Container Cleanup (`DockerSandbox.ts`)
+```typescript
+const timer = setTimeout(() => {
+  timedOut = true;
+  child.kill('SIGKILL');
+  this.forceRemoveContainer(containerName);
+}, timeLimitMs + 500);
+```
+*Why this matters:* If the host process terminates or an execution hangs, standard `--rm` containers can sometimes stay in a zombie state. Explicitly issuing `docker rm -f <containerName>` guarantees that zero containers leak in the Docker daemon.
+
+---
+
+## 4. Key System Design Concepts Involved
+
+1. **Operating System Sandboxing (cgroups & namespaces)**:
+   - Linux **Namespaces** provide process isolation (PID), network isolation (NET), mount isolation (MNT), and user isolation (USER).
+   - Linux **Control Groups (cgroups)** enforce hard resource accounting and limits on CPU time, RAM bytes, and process counts.
+2. **Ephemeral Environments**:
+   - Each submission starts in a pristine, disposable container that exists only for the duration of the test run and is destroyed immediately after.
+3. **Out-of-Memory (OOM) Handling**:
+   - When a container hits the memory limit without swap, the Linux kernel's OOM-killer terminates the process with exit code `137`. The judge maps this directly to `MEMORY_LIMIT_EXCEEDED`.
+4. **Defense in Depth**:
+   - Security is not reliant on a single barrier: we combine non-root users, network isolation, memory limits, CPU quotas, PID caps, timeout guards, and filesystem isolation.
+
+---
+
+## 5. Important Trade-offs
+
+| Decision | Alternative Considered | Trade-off & Justification |
+|---|---|---|
+| **Docker containers** | Local `child_process.spawn` | Containers introduce ~100–250ms startup latency per execution compared to raw local processes. However, local processes have zero security isolation against malicious code. |
+| **Docker containers** | Firecracker microVMs / gVisor | Firecracker or gVisor provide even stronger virtualization boundaries, but require complex bare-metal Linux hypervisors. Docker is practical, portable across developer environments (Windows, macOS, Linux), and standard for SDE portfolio projects. |
+| **Pre-built runner images** | Pulling generic images at runtime | Building dedicated `ocj-runner-*` images locally with non-root users ensures rapid container boot times and zero dependencies downloaded during a candidate's submission. |
+
+---
+
+## 6. Verification Results
+
+All tests were executed against Docker Desktop on the live server:
+
+1. **Python in Docker**:
+   - Two Sum algorithm executed in `ocj-runner-python:latest`.
+   - Passed all test cases → **`ACCEPTED`** (299ms).
+2. **C++ in Docker**:
+   - Compiled with `g++ -O2` inside `ocj-runner-cpp:latest`.
+   - Evaluated in sandbox → **`ACCEPTED`** (274ms).
+3. **Java in Docker**:
+   - Compiled with `javac` inside `ocj-runner-java:latest`.
+   - Evaluated in sandbox with `-Xmx256m` → **`ACCEPTED`** (335ms).
+4. **Network Access Attack**:
+   - Untrusted Python code attempted `socket.connect(('1.1.1.1', 80))`.
+   - Linux kernel returned `OSError: [Errno 101] Network unreachable` because `--network=none` disabled interfaces.
+5. **Fork Bomb Defense**:
+   - Untrusted Python code attempted to spawn 100 processes in a loop.
+   - Thwarted by `--pids-limit=64`.
+6. **Zero Leaked Containers**:
+   - Verified via `docker ps -a` that only `ocj-postgres` and `ocj-redis` exist. All ephemeral containers were removed cleanly.
+7. **Strict Compilation**:
+   - `npm run build` compiled with zero errors under TypeScript strict mode.
+
+---
+
+## 7. Interview Questions & Model Answers
+
+### Q1: Why is Docker used to execute code in an Online Judge?
+**Model Answer:**
+> "Submitted code is untrusted and potentially malicious. Docker leverages Linux kernel namespaces and cgroups to enforce strict security and resource isolation: `--network=none` blocks all network access, `--memory` and `--memory-swap` prevent RAM exhaustion, `--cpus` prevents CPU starvation, and `--pids-limit` blocks fork bombs. Each submission runs in a clean, disposable sandbox."
+
+### Q2: Does Docker alone provide 100% complete security against all attacks?
+**Model Answer:**
+> "No, and it is important not to claim it does in an interview. Docker containers share the host's Linux kernel. A kernel vulnerability (such as a Dirty COW or privilege escalation exploit in the kernel syscall layer) could theoretically allow a container breakout. Production platforms like LeetCode or AWS Lambda use additional sandboxing layers such as user-space kernel virtualization (Google gVisor), microVM hardware virtualization (AWS Firecracker), or custom seccomp/AppArmor syscall filtering profiles."
+
+### Q3: Why is `--memory-swap` set equal to `--memory`?
+**Model Answer:**
+> "By default, Docker allows a container to use swap space on disk equal to the memory limit. If a user allocates excessive memory, the container would start paging memory to disk, causing severe I/O lag on the host machine. Setting `--memory-swap` equal to `--memory` disables swap allocation for that container, guaranteeing that exceeding the memory limit immediately triggers the Linux kernel OOM-killer."
+
+### Q4: How do you defend against fork bombs (`:(){ :|:& };:`) in Docker?
+**Model Answer:**
+> "A fork bomb attempts to recursively spawn processes until the operating system runs out of process IDs (PIDs), crashing the system. We pass `--pids-limit=64` to the container. Once 64 processes/threads are created, any subsequent `fork()` or thread creation call fails with `Resource temporarily unavailable`, keeping the host OS unaffected."
+
+### Q5: Why is it important to run the container as a non-root user?
+**Model Answer:**
+> "By default, Docker containers run as `root` (UID 0), which matches UID 0 on the host system. If a container breakout or misconfigured volume mount occurs, code executing as root inside the container would have full root privileges on the host. Creating a dedicated non-root user (e.g., `sandboxuser:1000`) inside the Dockerfile limits any potential exploit to a low-privilege user."
+
+### Q6: What does exit code 137 mean in Docker?
+**Model Answer:**
+> "Exit code 137 is `128 + 9` (where 9 corresponds to `SIGKILL`). It indicates that the process or container was forcefully killed by the operating system. In Docker, this occurs either when our timeout handler sends `child.kill('SIGKILL')`, or when the container exceeds its memory limit and is terminated by the kernel's Out-Of-Memory (OOM) killer."
+
+### Q7: How does volume mounting work between the host and the sandbox container?
+**Model Answer:**
+> "Before execution, the worker creates an isolated temporary directory on the host (e.g. in `/tmp/ocj-runs/run-xyz`) and writes the user's source code file into it. We mount that single folder into the container using `-v <hostDir>:/sandbox:rw` and set `-w /sandbox`. The container can only view and modify files in that specific temporary directory, with no access to the rest of the host filesystem."
+
+### Q8: What is the performance overhead of running code inside Docker vs natively?
+**Model Answer:**
+> "Docker containers have virtually zero runtime CPU or memory overhead because processes run directly on the host Linux kernel (unlike hardware virtual machines). However, there is a small initialization latency of approximately 100ms to 250ms to spawn the container and attach the I/O streams. In high-throughput production systems, this is optimized by maintaining a 'warm pool' of pre-booted idle containers ready to receive code."
+
+### Q9: What happens if a submission container hangs indefinitely despite the code timeout?
+**Model Answer:**
+> "In `DockerSandbox.ts`, we implement a two-layer cancellation mechanism: first, the Node.js child process timer fires and sends `SIGKILL` to the `docker run` client. Second, because each container is assigned a unique deterministic name (`ocj-box-<randomId>`), the timer initiates an asynchronous `docker rm -f <containerName>` to instruct the Docker daemon to forcibly terminate and prune the container from memory, preventing container leaks."
+
+---
+
+## 8. What You Should Personally Understand Before Moving to Phase 5
+
+Before moving to the Asynchronous Redis Architecture:
+- [ ] How cgroups control CPU and memory, and how namespaces isolate network and process tables.
+- [ ] Why Docker is a practical sandbox, and what additional hardening (gVisor/Firecracker) would be used in enterprise production.
+- [ ] How exit code 137 distinguishes OOM-kills and timeouts.
+- [ ] Why volume mounting should be restricted to a single ephemeral temporary directory.
+
+---
+
+## Ready for Phase 5!
+In **Phase 5 (Asynchronous Architecture & Redis Queue)**, we will:
+1. Integrate **BullMQ** on top of Redis.
+2. Build the **Submission Producer** inside the API server.
+3. Build the **Submission Consumer** inside a standalone `worker.ts` process.
+4. Scale multiple worker processes reading concurrently from the Redis queue.
+
+Say **"proceed to Phase 5"** whenever you're ready!

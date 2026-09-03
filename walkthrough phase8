@@ -1,0 +1,37 @@
+# Phase 8 Walkthrough — Frontend Architecture & Real-Time Monaco IDE
+
+## Overview of What Was Built
+1. **React 19 + TypeScript + Vite Client Application**:
+   - Running locally on `http://localhost:3000` with dev proxy forwarding `/api` to Express backend on port 4000.
+   - Built a custom **Modern Obsidian Dark Design System** (`client/src/index.css`) with tokens, glassmorphism (`backdrop-filter: blur(16px)`), custom scrollbars, and glowing gradient accents (Emerald, Indigo, Cyan, Amber, Rose).
+   - Modern typography: **Inter** (UI) and **JetBrains Mono** (Code & Telemetry).
+
+2. **Split-Pane LeetCode-Equivalent Workspace (`src/pages/ProblemDetailPage.tsx`)**:
+   - **Left Pane**: Problem description, constraints, interactive sample test cases with one-click copy buttons, and a Submissions history tab.
+   - **Right Pane**: Multi-language selector (`PYTHON`, `CPP`, `JAVA`), VS-Code Monaco editor (`@monaco-editor/react`), starter templates, and evaluation control bar.
+
+3. **Asynchronous Real-Time Polling Engine (`src/hooks/useSubmissionPolling.ts`)**:
+   - Polling engine tracking `QUEUED` -> `RUNNING` -> Terminal verdict with timeout and memory leak protection.
+   - Live telemetry verdict card (`src/components/VerdictCard.tsx`): Execution time (ms), memory (MB), per-testcase pass breakdown, and compiler error accordion.
+
+4. **Authentication, Problem Catalog & Submissions Log**:
+   - Persistent JWT auth context with one-click demo credentials (`user@codejudge.com` / `user123`, `admin@codejudge.com` / `admin123`).
+   - Filterable problem list with real-time search, difficulty tabs, and pagination.
+   - User submissions log with full telemetry breakdown.
+
+---
+
+## Verification Results
+All automated tests in [verify_phase8.ps1](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/scripts/verify_phase8.ps1) passed:
+- **Vite Dev Server**: HTTP 200 OK on `http://localhost:3000/`.
+- **API Proxy**: `/api/health` responded `healthy`.
+- **Problem Catalog**: Retrieved problems from Redis cache.
+- **Authentication**: Logged in demo user and validated `/api/auth/me`.
+- **Submission & Polling**: Submitted Two Sum Python solution (`10ms` response), polled status (`QUEUED` -> `RUNNING` -> `ACCEPTED`), achieved `297ms` runtime and `16MB` memory inside Docker sandbox.
+- **Production Bundle**: `npm run build` compiled 1,916 modules with zero TypeScript errors.
+
+---
+
+## Notice Regarding Browser Subagent
+When attempting to launch the visual `browser_subagent`, the underlying Playwright runner encountered a CDN download failure (`404 Not Found from https://playwright.azureedge.net/builds/driver/playwright-1.57.0-win32_x64.zip`).
+As instructed by system rules when the browser subagent encounters an external environment error, we have verified the entire frontend and API proxy flows using our automated test suite and report back to ask you how you would like to proceed.

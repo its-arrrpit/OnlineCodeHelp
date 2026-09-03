@@ -1,0 +1,150 @@
+# Phase 1 Walkthrough — Architecture & Setup
+
+## What Was Built
+
+### Infrastructure
+- **Docker Compose** with PostgreSQL 16 and Redis 7 containers
+- Both services have health checks and persistent volumes
+
+### Database
+- **4 Prisma models**: User, Problem, TestCase, Submission
+- **6 enums**: Role, Difficulty, Language, SubmissionStatus
+- **5 indexes** with documented justifications
+- **Migration** applied to PostgreSQL
+- **Seed data**: 1 admin, 1 user, 3 problems with test cases
+
+### Server Foundation (13 files)
+
+| File | Purpose |
+|---|---|
+| [package.json](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/package.json) | Dependencies and npm scripts |
+| [tsconfig.json](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/tsconfig.json) | TypeScript strict mode config |
+| [schema.prisma](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/prisma/schema.prisma) | Database schema with all models, relations, indexes |
+| [seed.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/prisma/seed.ts) | Sample data for development |
+| [env.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/config/env.ts) | Validated environment config |
+| [database.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/config/database.ts) | Prisma client singleton |
+| [redis.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/config/redis.ts) | Redis client singleton |
+| [logger.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/utils/logger.ts) | Pino structured logging |
+| [ApiError.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/utils/ApiError.ts) | Custom error class with HTTP status codes |
+| [helpers.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/utils/helpers.ts) | asyncHandler for Express 4 async routes |
+| [errorHandler.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/middleware/errorHandler.ts) | Centralized error handling middleware |
+| [validate.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/middleware/validate.ts) | Zod schema validation middleware |
+| [index.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/index.ts) | Express server entry point |
+| [worker.ts](file:///c:/Users/arpit/OneDrive/Documents/HTML/React/OnlineCodeHelp/server/src/worker.ts) | Worker process placeholder |
+
+### Verified ✅
+- Docker Compose starts PostgreSQL + Redis
+- Prisma migration creates all tables
+- Seed script populates sample data
+- Express server starts on port 4000
+- `GET /api/health` returns `{ success: true, data: { status: "healthy" } }`
+- Unknown routes return `{ success: false, error: { code: "NOT_FOUND" } }`
+
+---
+
+## Why Each Piece Was Built
+
+| Component | Why |
+|---|---|
+| **Docker Compose** | One command to start all infrastructure. No manual PostgreSQL/Redis installation. Reproducible across machines. |
+| **Prisma ORM** | Type-safe database queries. Schema changes generate migrations automatically. TypeScript knows the exact shape of every query result. |
+| **Environment validation** | App crashes on startup with a clear message if config is wrong — not 10 minutes later with a cryptic error deep in a handler. |
+| **Singleton clients** | One database connection pool, one Redis connection. Multiple instances would exhaust connection limits. |
+| **Structured logging (Pino)** | JSON logs can be searched and filtered in production. `console.log` cannot. |
+| **Custom ApiError** | Consistent error responses. Factory methods (`ApiError.notFound()`) make error creation clean. |
+| **asyncHandler** | Express 4 silently swallows async errors. This wrapper catches them and forwards to the error handler. |
+| **Centralized error handler** | One place to format all errors. Routes just throw; they don't construct responses. |
+| **Zod validation middleware** | Express doesn't validate request bodies. Zod catches invalid input before it reaches business logic. |
+
+---
+
+## System Design Concepts in Phase 1
+
+### 1. Singleton Pattern
+One instance shared across the app. Prevents resource exhaustion (database connections, Redis connections). Node.js module caching makes this trivial — `export const prisma = new PrismaClient()` is cached on first import.
+
+### 2. Separation of Concerns
+Each file has one job. `env.ts` handles config. `logger.ts` handles logging. `errorHandler.ts` handles errors. No file does everything.
+
+### 3. Fail-Fast Principle
+If the database URL is missing, the app crashes at startup — not when the first request hits. This is intentional. A server that starts but can't serve requests is worse than one that refuses to start.
+
+### 4. Consistent Error Responses
+Every error response has the same shape: `{ success: false, error: { code, message } }`. The frontend can rely on this structure. No surprises.
+
+### 5. Declarative Schema (Prisma)
+The schema file is the single source of truth for the database. From it, Prisma generates: SQL migrations, TypeScript types, and a query client. Change the schema → regenerate → everything stays in sync.
+
+---
+
+## Trade-offs
+
+| Decision | Alternative | Why We Chose This |
+|---|---|---|
+| Prisma ORM | Raw SQL / Knex | Prisma gives type-safe queries and auto-generated migrations. Trade-off: less flexible for complex SQL. Acceptable for this project. |
+| Pino logger | Winston / console.log | Pino is the fastest Node.js logger. Winston is more feature-rich but slower. Pino is sufficient. |
+| Express 4 | Express 5 / Fastify | Express 4 is the most widely used, most documented, and most interview-relevant. Express 5 has native async support but is still newer. |
+| Zod validation | Joi / class-validator | Zod has first-class TypeScript support — schemas automatically produce types. Joi requires separate type definitions. |
+| UUID primary keys | Auto-increment integers | UUIDs are globally unique — safe in distributed systems. Auto-increment leaks information (competitor can guess your user count). Trade-off: UUIDs are larger (16 bytes vs 4 bytes). |
+
+---
+
+## Interview Questions & Model Answers
+
+### Q1: Why did you use a singleton pattern for the database client?
+**A:** Each PrismaClient instance holds a connection pool to PostgreSQL. If I created a new client in every file, I'd exhaust the database's connection limit. With the singleton, one pool is shared across all requests. Node.js module caching ensures `import { prisma }` always returns the same instance.
+
+### Q2: What happens if an environment variable is missing?
+**A:** The `requireEnv()` function throws an error at server startup. This is the "fail-fast" principle — it's better to crash immediately with a clear error than to start and fail later with a confusing one. For example, if `DATABASE_URL` is missing, the server won't start at all, and the log shows exactly which variable is missing.
+
+### Q3: Why do you need asyncHandler in Express 4?
+**A:** Express 4 doesn't catch rejected promises from async route handlers. If an async handler throws, the error disappears and the request hangs forever — no response, no error log. `asyncHandler` wraps async functions and calls `next(error)` on rejection, which forwards the error to the centralized error handler. Express 5 fixes this natively.
+
+### Q4: Why use Zod instead of just validating in controllers?
+**A:** Three reasons: (1) Zod schemas are reusable — the same schema validates input AND generates TypeScript types. (2) Validation is separated from business logic — controllers stay clean. (3) Error format is consistent — every validation failure returns the same structure with field-level messages.
+
+### Q5: Why UUID primary keys instead of auto-incrementing integers?
+**A:** UUIDs are globally unique without a central coordinator. In a distributed system with multiple database replicas, auto-increment IDs can collide. UUIDs also don't leak information — a competitor can't guess `GET /api/users/5000` to learn that I have 5000 users. The trade-off is UUIDs are larger (16 bytes vs 4 bytes), but for this scale, it's negligible.
+
+### Q6: Explain your database indexing strategy.
+**A:** I only index columns that appear in WHERE clauses of frequent queries. For example, `[userId, createdAt DESC]` on Submissions supports "show my recent submissions" — the composite index handles both the filter and the sort in one B-tree scan. I don't index every column because indexes slow down writes — every INSERT/UPDATE must also update the index.
+
+### Q7: What's the difference between the API server and the worker?
+**A:** They're separate processes from the same codebase. The API server handles HTTP requests (authentication, CRUD). The worker processes jobs from the Redis queue (code compilation, execution). They share the database and Redis, but not memory. This means: (1) they scale independently, (2) a worker crash doesn't affect the API, (3) they can run on different machines.
+
+### Q8: Why structured logging instead of console.log?
+**A:** `console.log("User 123 submitted")` is a string. You can't programmatically search it. Structured logging outputs JSON: `{"level":"info","userId":"123","action":"submit"}`. In production, I can query: "show all ERROR logs where userId=123 in the last hour." This is essential for debugging production issues.
+
+### Q9: Why does the error handler distinguish between ApiError and other errors?
+**A:** ApiErrors are intentional — the developer threw them deliberately (e.g., `throw ApiError.notFound()`). These get logged as warnings with the specific HTTP status code. Unknown errors are bugs — they get logged as errors with full stack traces and return a generic 500 to the client (never exposing internals).
+
+### Q10: Why Docker Compose for infrastructure?
+**A:** One `docker compose up -d` starts PostgreSQL and Redis with the right config, ports, and volumes. Without it, every developer needs to manually install and configure these services. Docker Compose makes the setup reproducible and self-documenting.
+
+---
+
+## What You Should Understand Before Phase 2
+
+Before moving on, make sure you can comfortably explain:
+
+- [ ] How the Express middleware chain works (request → helmet → cors → json → route → errorHandler)
+- [ ] What a Prisma model is and how it maps to a PostgreSQL table
+- [ ] What `@@index([userId, createdAt(sort: Desc)])` does and why it exists
+- [ ] Why `asyncHandler` is needed in Express 4
+- [ ] The difference between `interface` and `type` in TypeScript
+- [ ] What `Promise<void>` means (a promise that resolves with no value)
+- [ ] Why we have both `.env.example` (committed to git) and `.env` (never committed)
+
+---
+
+## Next: Phase 2 — Authentication & Problems
+
+Phase 2 will add:
+1. User registration and login with bcrypt + JWT
+2. Auth middleware (verify JWT, attach `req.user`)
+3. Authorization middleware (check role: USER vs ADMIN)
+4. Problem CRUD APIs (admin creates, users browse)
+5. Zod schemas for all request bodies
+6. Full controller → service → Prisma flow
+
+Say **"proceed to Phase 2"** when you're ready.
