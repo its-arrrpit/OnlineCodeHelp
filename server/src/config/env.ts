@@ -62,6 +62,28 @@ if (process.platform === 'win32') {
   }
 }
 
+// Helper to parse Redis configuration from REDIS_URL or REDIS_HOST/REDIS_PORT
+function getRedisConfig(): { host: string; port: number } {
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    try {
+      const url = new URL(redisUrl);
+      return {
+        host: url.hostname || 'localhost',
+        port: parseInt(url.port || '6379', 10),
+      };
+    } catch {
+      // Ignore URL parsing error and fallback
+    }
+  }
+  return {
+    host: optionalEnv('REDIS_HOST', 'localhost'),
+    port: parseInt(optionalEnv('REDIS_PORT', '6379'), 10),
+  };
+}
+
+const redisConfig = getRedisConfig();
+
 export const config = {
   // Server
   nodeEnv: optionalEnv('NODE_ENV', 'development'),
@@ -71,8 +93,8 @@ export const config = {
   databaseUrl: requireEnv('DATABASE_URL'),
 
   // Redis
-  redisHost: optionalEnv('REDIS_HOST', 'localhost'),
-  redisPort: parseInt(optionalEnv('REDIS_PORT', '6379'), 10),
+  redisHost: redisConfig.host,
+  redisPort: redisConfig.port,
 
   // Authentication
   jwtSecret: requireEnv('JWT_SECRET'),

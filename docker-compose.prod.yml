@@ -58,6 +58,8 @@ services:
       NODE_ENV: production
       PORT: 4000
       DATABASE_URL: postgresql://${POSTGRES_USER:-ocj_user}:${POSTGRES_PASSWORD:-ocj_password}@postgres:5432/${POSTGRES_DB:-online_code_judge}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-super-secret-production-jwt-key-256bit}
       JWT_EXPIRES_IN: 7d
@@ -85,6 +87,8 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-ocj_user}:${POSTGRES_PASSWORD:-ocj_password}@postgres:5432/${POSTGRES_DB:-online_code_judge}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       REDIS_URL: redis://redis:6379
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
     volumes:

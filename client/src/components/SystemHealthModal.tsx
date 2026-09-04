@@ -52,12 +52,16 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
   const fetchTelemetry = useCallback(async () => {
     setLoading(true);
     try {
-      const [statusRes, readyRes] = await Promise.all([
+      const [statusRes, readyRes] = await Promise.allSettled([
         api.get('/system/status'),
-        api.get('/ready'),
+        api.get('/ready', { validateStatus: () => true }),
       ]);
-      setStatus(statusRes.data.data);
-      setReadiness(readyRes.data.data);
+      if (statusRes.status === 'fulfilled' && statusRes.value?.data?.data) {
+        setStatus(statusRes.value.data.data);
+      }
+      if (readyRes.status === 'fulfilled' && readyRes.value?.data?.data) {
+        setReadiness(readyRes.value.data.data);
+      }
     } catch (err) {
       console.error('Failed to fetch telemetry', err);
     } finally {

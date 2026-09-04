@@ -89,8 +89,17 @@ app.get('/api/ready', async (_req, res) => {
   }
 
   try {
-    const queueClient = await submissionQueue.client;
-    queueHealthy = queueClient.status === 'ready' || (await (queueClient as any).ping()) === 'PONG';
+    const queueClient = await Promise.race([
+      submissionQueue.client,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+    ]);
+    if (queueClient) {
+      const pingRes = await Promise.race([
+        (queueClient as any).ping(),
+        new Promise<string>((resolve) => setTimeout(() => resolve('TIMEOUT'), 1000)),
+      ]);
+      queueHealthy = queueClient.status === 'ready' || pingRes === 'PONG';
+    }
   } catch (err) {
     logger.error({ err }, 'Readiness check failed on BullMQ');
   }
@@ -123,7 +132,12 @@ app.get('/api/metrics', async (_req, res) => {
 // Admin System Telemetry Status
 app.get('/api/system/status', async (_req, res) => {
   try {
-    const counts = await submissionQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed');
+    const counts = await Promise.race([
+      submissionQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+      new Promise<{ waiting: number; active: number; completed: number; failed: number; delayed: number }>((resolve) =>
+        setTimeout(() => resolve({ waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 }), 2000)
+      ),
+    ]);
     const memory = process.memoryUsage();
 
     res.json({
