@@ -13,6 +13,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
+    "seed:more": "tsx prisma/seed_expanded.ts",
+    "seed:bulk": "tsx scripts/import_bulk_leetcode.ts",
     "test": "jest --passWithNoTests"
   },
   "dependencies": {

@@ -23,6 +23,23 @@ import { CreateProblemInput, UpdateProblemInput } from '../schemas/problem.schem
 const PROBLEM_CACHE_TTL = 3600; // 1 hour for problem detail
 const PROBLEM_LIST_CACHE_TTL = 300; // 5 minutes for problem listing pages
 
+const TOPIC_KEYWORD_MAP: Record<string, string[]> = {
+  'arrays': ['array', 'matrix', 'subarray'],
+  'arrays & hashing': ['array', 'matrix', 'subarray', 'hash', 'hash table'],
+  'hashing': ['hash', 'hash table', 'map'],
+  'two pointers': ['two pointer', 'pointer', 'palindrome'],
+  'dynamic programming': ['dynamic programming', 'subsequence', 'substring', 'partition', 'knapsack', 'subset', 'ways'],
+  'dp': ['dynamic programming', 'subsequence', 'substring', 'partition', 'knapsack', 'subset', 'ways'],
+  'trees & graphs': ['tree', 'graph', 'binary tree', 'node', 'bst', 'depth-first', 'breadth-first'],
+  'trees': ['tree', 'binary tree', 'node', 'bst'],
+  'graphs': ['graph', 'vertex', 'edge', 'cycle', 'path'],
+  'binary search': ['binary search', 'search in', 'median', 'peak'],
+  'sliding window': ['window', 'sliding', 'substring', 'consecutive'],
+  'greedy': ['greedy', 'jump', 'gas', 'interval', 'maximize'],
+  'math': ['math', 'prime', 'digit', 'number', 'integer'],
+  'strings': ['string', 'words', 'character', 'anagram'],
+};
+
 // ─── List Problems (Public, Cached) ─────────────────────────────────
 
 /**
@@ -32,22 +49,55 @@ const PROBLEM_LIST_CACHE_TTL = 300; // 5 minutes for problem listing pages
 export async function listProblems(
   page: number = 1,
   limit: number = 10,
-  difficulty?: Difficulty
+  difficulty?: Difficulty,
+  search?: string,
+  topic?: string
 ) {
   const pageNum = Math.max(1, Number(page) || 1);
   const limitNum = Math.max(1, Math.min(50, Number(limit) || 10));
-  const cacheKey = `problems:list:p${pageNum}:l${limitNum}:d${difficulty || 'all'}`;
+  const trimmedSearch = search?.trim() || '';
+  const trimmedTopic = topic?.trim() || '';
+  const cacheKey = `problems:list:p${pageNum}:l${limitNum}:d${difficulty || 'all'}:s${trimmedSearch ? encodeURIComponent(trimmedSearch) : 'none'}:t${trimmedTopic ? encodeURIComponent(trimmedTopic) : 'none'}`;
 
   return await CacheService.getOrSet(cacheKey, PROBLEM_LIST_CACHE_TTL, async () => {
-    // Build the WHERE clause dynamically.
-    // Only published problems are shown to users.
-    const where: { isPublished: boolean; difficulty?: Difficulty } = {
-      isPublished: true,
-    };
+    const andConditions: any[] = [{ isPublished: true }];
 
     if (difficulty) {
-      where.difficulty = difficulty;
+      andConditions.push({ difficulty });
     }
+
+    // 1. Topic Filtering
+    if (trimmedTopic.length > 0) {
+      const normalizedTopic = trimmedTopic.toLowerCase();
+      const keywords = TOPIC_KEYWORD_MAP[normalizedTopic] || [trimmedTopic];
+      const topicOrConditions = keywords.flatMap((kw) => [
+        { title: { contains: kw, mode: 'insensitive' } },
+        { description: { contains: kw, mode: 'insensitive' } },
+      ]);
+      andConditions.push({ OR: topicOrConditions });
+    }
+
+    // 2. Search Text Filtering
+    if (trimmedSearch.length > 0) {
+      const normalizedSearch = trimmedSearch.toLowerCase();
+      const topicKeywords = TOPIC_KEYWORD_MAP[normalizedSearch];
+      if (topicKeywords) {
+        const searchTopicConditions = topicKeywords.flatMap((kw) => [
+          { title: { contains: kw, mode: 'insensitive' } },
+          { description: { contains: kw, mode: 'insensitive' } },
+        ]);
+        andConditions.push({ OR: searchTopicConditions });
+      } else {
+        andConditions.push({
+          OR: [
+            { title: { contains: trimmedSearch, mode: 'insensitive' } },
+            { description: { contains: trimmedSearch, mode: 'insensitive' } },
+          ],
+        });
+      }
+    }
+
+    const where: any = andConditions.length === 1 ? andConditions[0] : { AND: andConditions };
 
     const [items, total] = await Promise.all([
       prisma.problem.findMany({

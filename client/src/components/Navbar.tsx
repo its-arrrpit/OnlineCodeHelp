@@ -1,6 +1,12 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Code2, Terminal, User as UserIcon, LogOut, ShieldCheck, Activity, Menu, X } from 'lucide-react';
+import {
+  Terminal,
+  Activity,
+  LogOut,
+  Menu,
+  X,
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { SystemHealthModal } from './SystemHealthModal';
 
@@ -17,174 +23,157 @@ export const Navbar: React.FC = () => {
     navigate('/login');
   };
 
-  const isActive = (path: string) => location.pathname === path;
+  const isActive = (path: string) => {
+    if (path === '/problems') {
+      return location.pathname === '/problems' || location.pathname.startsWith('/problems/');
+    }
+    return location.pathname === path;
+  };
 
   return (
     <>
-      <nav className="glass-nav" style={{ position: 'sticky', top: 0, zIndex: 50 }}>
-        <div className="container flex items-center justify-between py-3">
-          {/* Logo */}
-          <Link to="/" className="flex items-center gap-2 text-decoration-none">
-            <div
-              style={{
-                background: 'linear-gradient(135deg, #6366f1 0%, #06b6d4 100%)',
-                padding: '6px',
-                borderRadius: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 0 12px rgba(99, 102, 241, 0.4)',
-              }}
-            >
-              <Terminal size={20} color="#ffffff" />
-            </div>
-            <span style={{ fontSize: '1.25rem', fontWeight: 800, letterSpacing: '-0.03em' }}>
-              Code<span style={{ color: 'var(--accent-indigo)' }}>Judge</span>
-            </span>
-          </Link>
-
-          {/* Desktop Navigation Links */}
-          <div className="flex items-center gap-6 hide-on-mobile">
-            <Link
-              to="/problems"
-              className="flex items-center gap-1.5"
-              style={{
-                fontSize: '0.9rem',
-                fontWeight: 500,
-                color: isActive('/problems') ? 'var(--text-primary)' : 'var(--text-secondary)',
-                transition: 'color 150ms',
-              }}
-            >
-              <Code2 size={16} />
-              Problems
-            </Link>
-
-            {isAuthenticated && (
-              <Link
-                to="/submissions"
-                className="flex items-center gap-1.5"
+      <nav className="glass-nav">
+        <div
+          className="container flex items-center justify-between"
+          style={{ maxWidth: '1800px', height: '100%' }}
+        >
+          {/* Brand Logo & Main Nav Links */}
+          <div className="flex items-center gap-8">
+            <Link to="/" className="flex items-center gap-2 text-decoration-none">
+              <div
                 style={{
-                  fontSize: '0.9rem',
-                  fontWeight: 500,
-                  color: isActive('/submissions') ? 'var(--text-primary)' : 'var(--text-secondary)',
-                  transition: 'color 150ms',
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '6px',
+                  background: 'rgba(99, 102, 241, 0.12)',
+                  border: '1px solid rgba(99, 102, 241, 0.25)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                Submissions
-              </Link>
-            )}
+                <Terminal size={16} color="#818cf8" />
+              </div>
+              <span
+                style={{
+                  fontSize: '1.05rem',
+                  fontWeight: 700,
+                  letterSpacing: '-0.02em',
+                  color: '#f8fafc',
+                }}
+              >
+                Code<span style={{ color: '#818cf8' }}>Judge</span>
+              </span>
+            </Link>
 
-            {/* Platform Telemetry Trigger */}
-            <button
-              onClick={() => setTelemetryOpen(true)}
-              className="btn btn-ghost btn-sm flex items-center gap-1.5"
-              title="System Telemetry & Live Gauges"
-              style={{
-                fontSize: '0.825rem',
-                color: 'var(--accent-cyan)',
-                border: '1px solid rgba(6, 182, 212, 0.25)',
-                background: 'rgba(6, 182, 212, 0.08)',
-                padding: '3px 8px',
-                borderRadius: '6px',
-              }}
-            >
-              <Activity size={13} className="animate-pulse" />
-              Telemetry
-            </button>
+            {/* Clean Desktop Nav Links */}
+            <div className="flex items-center gap-2 hide-on-mobile">
+              <Link
+                to="/problems"
+                className={`nav-link ${isActive('/problems') ? 'active' : ''}`}
+              >
+                Problems
+              </Link>
+
+              {isAuthenticated && (
+                <Link
+                  to="/submissions"
+                  className={`nav-link ${isActive('/submissions') ? 'active' : ''}`}
+                >
+                  Submissions
+                </Link>
+              )}
+            </div>
           </div>
 
-          {/* Desktop User Auth Pill */}
+          {/* Desktop Right Controls */}
           <div className="flex items-center gap-3 hide-on-mobile">
+            {/* Telemetry Button */}
+            <button
+              onClick={() => setTelemetryOpen(true)}
+              className="nav-icon-btn"
+              title="System Telemetry & Health Metrics"
+            >
+              <Activity size={13} color="#34d399" />
+              <span>Telemetry</span>
+            </button>
+
             {isAuthenticated ? (
-              <div className="flex items-center gap-3">
-                <div
-                  className="flex items-center gap-2"
-                  style={{
-                    background: 'var(--bg-surface)',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: 'var(--radius-full)',
-                    padding: '4px 12px 4px 8px',
-                  }}
-                >
-                  <div
+              <div className="nav-user-chip">
+                <div className="nav-avatar">
+                  {user?.username ? user.username.charAt(0).toUpperCase() : 'U'}
+                </div>
+                <span>{user?.username}</span>
+                {isAdmin && (
+                  <span
                     style={{
-                      width: '24px',
-                      height: '24px',
-                      borderRadius: '50%',
-                      background: 'linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
+                      fontSize: '0.625rem',
+                      fontWeight: 700,
+                      color: '#818cf8',
+                      background: 'rgba(99, 102, 241, 0.15)',
+                      padding: '1px 5px',
+                      borderRadius: '4px',
                     }}
                   >
-                    <UserIcon size={14} color="#ffffff" />
-                  </div>
-                  <span style={{ fontSize: '0.825rem', fontWeight: 600 }}>{user?.username}</span>
-                  {isAdmin && (
-                    <span
-                      style={{
-                        fontSize: '0.65rem',
-                        fontWeight: 700,
-                        background: 'rgba(99, 102, 241, 0.2)',
-                        color: 'var(--accent-indigo)',
-                        border: '1px solid rgba(99, 102, 241, 0.4)',
-                        padding: '1px 6px',
-                        borderRadius: '9999px',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '2px',
-                      }}
-                    >
-                      <ShieldCheck size={10} />
-                      ADMIN
-                    </span>
-                  )}
-                </div>
-
+                    ADMIN
+                  </span>
+                )}
                 <button
                   onClick={handleLogout}
-                  className="btn btn-ghost btn-sm"
+                  className="nav-logout-btn"
                   title="Sign Out"
-                  style={{ padding: '6px 10px' }}
                 >
-                  <LogOut size={16} />
+                  <LogOut size={13} />
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
-                <Link to="/login" className="btn btn-ghost btn-sm">
+              <div className="flex items-center gap-3">
+                <Link
+                  to="/login"
+                  style={{
+                    fontSize: '0.85rem',
+                    color: '#94a3b8',
+                    fontWeight: 500,
+                    transition: 'color 150ms',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#ffffff')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+                >
                   Sign In
                 </Link>
-                <Link to="/register" className="btn btn-primary btn-sm">
+                <Link
+                  to="/register"
+                  className="btn btn-primary btn-sm"
+                  style={{
+                    fontSize: '0.8rem',
+                    padding: '0.35rem 0.85rem',
+                    borderRadius: '6px',
+                  }}
+                >
                   Get Started
                 </Link>
               </div>
             )}
           </div>
 
-          {/* Mobile Right Controls: Telemetry Icon + Hamburger */}
+          {/* Mobile Right Controls */}
           <div className="show-on-mobile items-center gap-2">
             <button
               onClick={() => setTelemetryOpen(true)}
-              className="btn btn-ghost btn-sm"
-              style={{
-                color: 'var(--accent-cyan)',
-                border: '1px solid rgba(6, 182, 212, 0.3)',
-                padding: '6px',
-                borderRadius: '8px',
-              }}
+              className="nav-icon-btn"
+              style={{ padding: '5px 7px' }}
               aria-label="Telemetry"
             >
-              <Activity size={16} className="animate-pulse" />
+              <Activity size={14} color="#34d399" />
             </button>
 
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               className="btn btn-ghost btn-sm"
-              style={{ padding: '6px', borderRadius: '8px' }}
+              style={{ padding: '6px', borderRadius: '6px' }}
               aria-label="Toggle Menu"
             >
-              {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+              {mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
             </button>
           </div>
         </div>
@@ -192,81 +181,67 @@ export const Navbar: React.FC = () => {
         {/* Mobile Dropdown Menu */}
         {mobileMenuOpen && (
           <div
-            className="show-on-mobile flex-col p-4"
+            className="show-on-mobile flex-col p-3"
             style={{
-              background: 'var(--bg-surface)',
-              borderBottom: '1px solid var(--border-subtle)',
+              position: 'absolute',
+              top: '52px',
+              left: 0,
+              right: 0,
+              background: '#090d16',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              boxShadow: '0 10px 25px rgba(0, 0, 0, 0.6)',
+              zIndex: 60,
               animation: 'fadeIn 150ms ease-out',
             }}
           >
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
               <Link
                 to="/problems"
                 onClick={() => setMobileMenuOpen(false)}
-                className="flex items-center gap-2 p-2"
-                style={{
-                  color: isActive('/problems') ? 'var(--accent-indigo)' : 'var(--text-primary)',
-                  fontWeight: 600,
-                  fontSize: '0.95rem',
-                }}
+                className={`nav-link ${isActive('/problems') ? 'active' : ''}`}
+                style={{ padding: '0.5rem 0.75rem' }}
               >
-                <Code2 size={18} />
-                Problems Catalog
+                Problems
               </Link>
 
               {isAuthenticated && (
                 <Link
                   to="/submissions"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="flex items-center gap-2 p-2"
-                  style={{
-                    color: isActive('/submissions') ? 'var(--accent-indigo)' : 'var(--text-primary)',
-                    fontWeight: 600,
-                    fontSize: '0.95rem',
-                  }}
+                  className={`nav-link ${isActive('/submissions') ? 'active' : ''}`}
+                  style={{ padding: '0.5rem 0.75rem' }}
                 >
-                  <Terminal size={18} />
-                  My Submissions
+                  Submissions
                 </Link>
               )}
 
-              <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '0.25rem 0' }} />
+              <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.08)', margin: '0.35rem 0' }} />
 
               {isAuthenticated ? (
                 <div className="flex items-center justify-between p-2">
                   <div className="flex items-center gap-2">
-                    <div
-                      style={{
-                        width: '28px',
-                        height: '28px',
-                        borderRadius: '50%',
-                        background: 'linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      <UserIcon size={16} color="#ffffff" />
+                    <div className="nav-avatar">
+                      {user?.username ? user.username.charAt(0).toUpperCase() : 'U'}
                     </div>
-                    <span style={{ fontWeight: 600 }}>{user?.username}</span>
+                    <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{user?.username}</span>
                   </div>
 
                   <button
                     onClick={handleLogout}
                     className="btn btn-secondary btn-sm"
-                    style={{ fontSize: '0.8rem', padding: '4px 10px' }}
+                    style={{ fontSize: '0.75rem', padding: '3px 8px' }}
                   >
-                    <LogOut size={14} />
+                    <LogOut size={13} />
                     Logout
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2 pt-2">
+                <div className="flex items-center gap-2 pt-1">
                   <Link
                     to="/login"
                     onClick={() => setMobileMenuOpen(false)}
                     className="btn btn-secondary btn-sm flex-1"
-                    style={{ justifyContent: 'center' }}
+                    style={{ justifyContent: 'center', fontSize: '0.8rem' }}
                   >
                     Sign In
                   </Link>
@@ -274,7 +249,7 @@ export const Navbar: React.FC = () => {
                     to="/register"
                     onClick={() => setMobileMenuOpen(false)}
                     className="btn btn-primary btn-sm flex-1"
-                    style={{ justifyContent: 'center' }}
+                    style={{ justifyContent: 'center', fontSize: '0.8rem' }}
                   >
                     Get Started
                   </Link>

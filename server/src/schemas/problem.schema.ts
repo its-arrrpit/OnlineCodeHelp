@@ -68,6 +68,8 @@ export const problemQuerySchema = z.object({
   page: z.coerce.number().int().positive().optional().default(1),
   limit: z.coerce.number().int().positive().max(50).optional().default(10),
   difficulty: z.enum(['EASY', 'MEDIUM', 'HARD']).optional(),
+  search: z.string().trim().max(100).optional(),
+  topic: z.string().trim().max(100).optional(),
 });
 
 export type ProblemQueryInput = z.infer<typeof problemQuerySchema>;

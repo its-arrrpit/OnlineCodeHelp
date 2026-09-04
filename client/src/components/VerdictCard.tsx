@@ -6,9 +6,10 @@ import { StatusBadge } from './StatusBadge';
 interface VerdictCardProps {
   submission: Submission | null;
   isPolling?: boolean;
+  noMargin?: boolean;
 }
 
-export const VerdictCard: React.FC<VerdictCardProps> = ({ submission, isPolling = false }) => {
+export const VerdictCard: React.FC<VerdictCardProps> = ({ submission, isPolling = false, noMargin = false }) => {
   if (!submission && !isPolling) {
     return null;
   }
@@ -21,7 +22,7 @@ export const VerdictCard: React.FC<VerdictCardProps> = ({ submission, isPolling 
     <div
       className="glass-panel p-4"
       style={{
-        marginTop: '1rem',
+        marginTop: noMargin ? 0 : '1rem',
         borderLeft:
           (submission?.verdict === 'ACCEPTED' || submission?.status === 'ACCEPTED')
             ? '4px solid var(--accent-emerald)'

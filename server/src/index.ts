@@ -202,12 +202,25 @@ app.use('/api/*', (_req, res) => {
 
 app.use(errorHandler);
 
+import { createSubmissionWorker } from './queue/submissionConsumer';
+import type { Worker } from 'bullmq';
+import type { SubmissionJobData } from './queue/submissionQueue';
+
+let devWorker: Worker<SubmissionJobData> | null = null;
+
 // ─── Start Server ───────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   try {
     // Connect to PostgreSQL
     await connectDatabase();
+
+    // In development mode, auto-start an embedded submission worker
+    // so developer code submissions evaluate immediately without needing a 3rd terminal
+    if (config.isDev && process.env.DISABLE_EMBEDDED_WORKER !== 'true') {
+      devWorker = createSubmissionWorker(2);
+      logger.info('🚀 Embedded BullMQ submission worker active for local development');
+    }
 
     // Start listening for HTTP requests
     app.listen(config.port, () => {
@@ -226,6 +239,9 @@ async function main(): Promise<void> {
 
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'Received shutdown signal');
+  if (devWorker) {
+    await devWorker.close();
+  }
   await closeSubmissionQueue();
   await closeSubmissionDlq();
   await disconnectDatabase();

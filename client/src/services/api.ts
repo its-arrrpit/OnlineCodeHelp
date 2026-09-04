@@ -50,7 +50,7 @@ export const authApi = {
 
 // Problems API
 export const problemsApi = {
-  getAll: async (params?: { page?: number; limit?: number; difficulty?: string; search?: string }) => {
+  getAll: async (params?: { page?: number; limit?: number; difficulty?: string; search?: string; topic?: string }) => {
     const res = await api.get<ApiResponse<PaginatedProblems>>('/problems', { params });
     return res.data.data;
   },

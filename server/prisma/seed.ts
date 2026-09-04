@@ -1,24 +1,23 @@
 // ===================================================================
-// Prisma Seed Script
+// Prisma Seed Script — Full Problem Catalog Edition
 // ===================================================================
-// Populates the database with sample data for development.
-// Run with: npx prisma db seed
+// Populates the database with users and a rich catalog of 32 iconic
+// LeetCode problems (Easy, Medium, Hard) across diverse DSA topics.
 //
-// WHY SEED DATA?
-//   You don't want to manually create users and problems every time
-//   you reset the database. Seed data gives you a working baseline
-//   to test the UI and API immediately after setup.
+// Run with: npx prisma db seed   OR   npm run prisma:seed
 // ===================================================================
 
-import { PrismaClient, Difficulty, Role } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcrypt';
+import Redis from 'ioredis';
+import { ALL_PROBLEMS } from './problemsData';
 
 const prisma = new PrismaClient();
 
 async function main(): Promise<void> {
-  console.log('Seeding database...');
+  console.log('🚀 Seeding database with full LeetCode problem suite...\n');
 
-  // ─── Create Admin User ────────────────────────────────────────────
+  // ─── 1. Create Admin User ──────────────────────────────────────────
   const adminPassword = await bcrypt.hash('admin123', 10);
   const admin = await prisma.user.upsert({
     where: { email: 'admin@codejudge.com' },
@@ -30,9 +29,9 @@ async function main(): Promise<void> {
       role: Role.ADMIN,
     },
   });
-  console.log(`Created admin user: ${admin.email}`);
+  console.log(`✅ Admin user: ${admin.email}`);
 
-  // ─── Create Test User ─────────────────────────────────────────────
+  // ─── 2. Create Test User ───────────────────────────────────────────
   const userPassword = await bcrypt.hash('user123', 10);
   const user = await prisma.user.upsert({
     where: { email: 'user@codejudge.com' },
@@ -44,191 +43,98 @@ async function main(): Promise<void> {
       role: Role.USER,
     },
   });
-  console.log(`Created test user: ${user.email}`);
+  console.log(`✅ Test user:  ${user.email}\n`);
 
-  // ─── Create Sample Problems ───────────────────────────────────────
+  // ─── 3. Seed All LeetCode Problems ─────────────────────────────────
+  let createdCount = 0;
+  let skippedCount = 0;
 
-  const problem1 = await prisma.problem.create({
-    data: {
-      title: 'Two Sum',
-      description: `Given an array of integers \`nums\` and an integer \`target\`, return the two numbers such that they add up to \`target\`.
+  for (const prob of ALL_PROBLEMS) {
+    const existing = await prisma.problem.findFirst({
+      where: { title: prob.title },
+      include: { testCases: true },
+    });
 
-You may assume that each input would have **exactly one solution**, and you may not use the same element twice.
+    if (existing) {
+      // If problem exists but has no test cases, populate them
+      if (existing.testCases.length === 0) {
+        await prisma.testCase.createMany({
+          data: prob.testCases.map((tc, idx) => ({
+            problemId: existing.id,
+            input: tc.input,
+            expectedOutput: tc.expectedOutput,
+            isSample: tc.isSample,
+            orderIndex: tc.orderIndex ?? idx,
+            timeLimitMs: tc.timeLimitMs ?? 2000,
+            memoryLimitMb: tc.memoryLimitMb ?? 256,
+          })),
+        });
+        console.log(`🔄 Backfilled test cases for: "${prob.title}"`);
+      } else {
+        skippedCount++;
+      }
+      continue;
+    }
 
-Print the two numbers separated by a space, in the order they appear in the array.`,
-      difficulty: Difficulty.EASY,
-      constraints: `- 2 <= nums.length <= 10^4
-- -10^9 <= nums[i] <= 10^9
-- Only one valid answer exists.`,
-      examples: `**Example 1:**
-Input:
-4
-2 7 11 15
-9
-
-Output:
-2 7
-
-**Example 2:**
-Input:
-3
-3 2 4
-6
-
-Output:
-2 4`,
-      isPublished: true,
-      createdBy: admin.id,
-      testCases: {
-        create: [
-          {
-            input: '4\n2 7 11 15\n9',
-            expectedOutput: '2 7',
-            isSample: true,
-            orderIndex: 0,
-          },
-          {
-            input: '3\n3 2 4\n6',
-            expectedOutput: '2 4',
-            isSample: true,
-            orderIndex: 1,
-          },
-          {
-            input: '2\n3 3\n6',
-            expectedOutput: '3 3',
-            isSample: false,
-            orderIndex: 2,
-          },
-          {
-            input: '5\n1 9 4 7 2\n8',
-            expectedOutput: '1 7',
-            isSample: false,
-            orderIndex: 3,
-          },
-        ],
+    // Create problem along with all test cases
+    await prisma.problem.create({
+      data: {
+        title: prob.title,
+        description: prob.description,
+        difficulty: prob.difficulty,
+        constraints: prob.constraints,
+        examples: prob.examples,
+        isPublished: true,
+        createdBy: admin.id,
+        testCases: {
+          create: prob.testCases.map((tc, idx) => ({
+            input: tc.input,
+            expectedOutput: tc.expectedOutput,
+            isSample: tc.isSample,
+            orderIndex: tc.orderIndex ?? idx,
+            timeLimitMs: tc.timeLimitMs ?? 2000,
+            memoryLimitMb: tc.memoryLimitMb ?? 256,
+          })),
+        },
       },
-    },
-  });
-  console.log(`Created problem: ${problem1.title}`);
+    });
 
-  const problem2 = await prisma.problem.create({
-    data: {
-      title: 'Reverse a String',
-      description: `Write a program that reads a string and prints it reversed.`,
-      difficulty: Difficulty.EASY,
-      constraints: `- 1 <= s.length <= 10^5
-- s consists of printable ASCII characters.`,
-      examples: `**Example 1:**
-Input:
-hello
+    createdCount++;
+    console.log(`[+] [${prob.difficulty.padEnd(6)}] Created problem: "${prob.title}"`);
+  }
 
-Output:
-olleh
-
-**Example 2:**
-Input:
-OpenAI
-
-Output:
-IAnepO`,
-      isPublished: true,
-      createdBy: admin.id,
-      testCases: {
-        create: [
-          {
-            input: 'hello',
-            expectedOutput: 'olleh',
-            isSample: true,
-            orderIndex: 0,
-          },
-          {
-            input: 'OpenAI',
-            expectedOutput: 'IAnepO',
-            isSample: true,
-            orderIndex: 1,
-          },
-          {
-            input: 'abcdefghij',
-            expectedOutput: 'jihgfedcba',
-            isSample: false,
-            orderIndex: 2,
-          },
-        ],
-      },
-    },
-  });
-  console.log(`Created problem: ${problem2.title}`);
-
-  const problem3 = await prisma.problem.create({
-    data: {
-      title: 'FizzBuzz',
-      description: `Given an integer \`n\`, print the numbers from 1 to n. But for multiples of 3, print "Fizz" instead of the number. For multiples of 5, print "Buzz". For multiples of both 3 and 5, print "FizzBuzz".
-
-Print each value on a new line.`,
-      difficulty: Difficulty.EASY,
-      constraints: `- 1 <= n <= 10^4`,
-      examples: `**Example 1:**
-Input:
-5
-
-Output:
-1
-2
-Fizz
-4
-Buzz
-
-**Example 2:**
-Input:
-15
-
-Output:
-1
-2
-Fizz
-4
-Buzz
-Fizz
-7
-8
-Fizz
-Buzz
-11
-Fizz
-13
-14
-FizzBuzz`,
-      isPublished: true,
-      createdBy: admin.id,
-      testCases: {
-        create: [
-          {
-            input: '5',
-            expectedOutput: '1\n2\nFizz\n4\nBuzz',
-            isSample: true,
-            orderIndex: 0,
-          },
-          {
-            input: '15',
-            expectedOutput: '1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz',
-            isSample: true,
-            orderIndex: 1,
-          },
-          {
-            input: '1',
-            expectedOutput: '1',
-            isSample: false,
-            orderIndex: 2,
-          },
-        ],
-      },
-    },
-  });
-  console.log(`Created problem: ${problem3.title}`);
-
-  console.log('\nSeed completed successfully!');
+  console.log(`\n======================================================`);
+  console.log(`✨ Seeding Complete: ${createdCount} created, ${skippedCount} already up-to-date.`);
+  console.log(`Total Problems in Catalog: ${ALL_PROBLEMS.length}`);
+  console.log(`======================================================`);
   console.log('Admin login: admin@codejudge.com / admin123');
-  console.log('User login:  user@codejudge.com / user123');
+  console.log('User login:  user@codejudge.com / user123\n');
+
+  // ─── 4. Invalidate Redis Caches if Available ───────────────────────
+  try {
+    const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+      maxRetriesPerRequest: 1,
+      connectTimeout: 1000,
+      retryStrategy: () => null,
+    });
+
+    redis.on('error', () => {
+      // Silently ignore if Redis is offline during seed
+    });
+
+    const keys = await Promise.race([
+      redis.keys('*problems*'),
+      new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+    ]).catch(() => [] as string[]);
+
+    if (keys && keys.length > 0) {
+      await redis.del(...keys);
+      console.log(`🧹 Cleared ${keys.length} cached problem keys in Redis.`);
+    }
+    redis.disconnect();
+  } catch {
+    // Redis not running; safe to ignore
+  }
 }
 
 main()

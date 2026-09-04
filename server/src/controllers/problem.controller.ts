@@ -13,9 +13,9 @@ import { CreateProblemInput, UpdateProblemInput, ProblemQueryInput } from '../sc
 export async function list(req: Request, res: Response): Promise<void> {
   // Query params come as strings. Zod's z.coerce.number() in
   // problemQuerySchema converts them to numbers during validation.
-  const { page, limit, difficulty } = req.query as unknown as ProblemQueryInput;
+  const { page, limit, difficulty, search, topic } = req.query as unknown as ProblemQueryInput;
 
-  const result = await problemService.listProblems(page, limit, difficulty);
+  const result = await problemService.listProblems(page, limit, difficulty, search, topic);
 
   res.json({
     success: true,

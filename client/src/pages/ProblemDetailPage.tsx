@@ -11,14 +11,22 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  Sparkles,
+  Terminal,
+  ChevronUp,
+  ChevronDown,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import type { Problem, Language, Submission, Difficulty } from '../types';
 import { problemsApi, submissionsApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { DifficultyBadge } from '../components/DifficultyBadge';
 import { StatusBadge } from '../components/StatusBadge';
-import { CodeEditor, STARTER_TEMPLATES } from '../components/CodeEditor';
+import { CodeEditor } from '../components/CodeEditor';
+import { STARTER_TEMPLATES } from '../constants/templates';
 import { VerdictCard } from '../components/VerdictCard';
+import { ExecutionModal } from '../components/ExecutionModal';
 import { useSubmissionPolling } from '../hooks/useSubmissionPolling';
 
 export const ProblemDetailPage: React.FC = () => {
@@ -29,6 +37,41 @@ export const ProblemDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'description' | 'history'>('description');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [isExecutionModalOpen, setIsExecutionModalOpen] = useState(false);
+
+  // Resizable Console Panel State
+  const [consoleHeight, setConsoleHeight] = useState(240);
+  const [isDraggingConsole, setIsDraggingConsole] = useState(false);
+  const [isConsoleOpen, setIsConsoleOpen] = useState(false);
+  const [isConsoleMaximized, setIsConsoleMaximized] = useState(false);
+  const rightPanelRef = React.useRef<HTMLDivElement>(null);
+
+  const handleConsoleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDraggingConsole(true);
+    const startY = e.clientY;
+    const startHeight = consoleHeight;
+    const totalPanelHeight = rightPanelRef.current?.clientHeight || 600;
+    // Keep at least 140px for top toolbar + minimum editor height
+    const maxConsoleHeight = Math.max(120, totalPanelHeight - 140);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      // clientY is smaller near the top of screen. Dragging UP decreases clientY,
+      // making (startY - moveEvent.clientY) positive and increasing consoleHeight.
+      const deltaY = startY - moveEvent.clientY;
+      const newHeight = Math.max(90, Math.min(maxConsoleHeight, startHeight + deltaY));
+      setConsoleHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingConsole(false);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
 
   // Editor State per language (persisted to localStorage)
   const getInitialCodeMap = useCallback((problemId?: string): Record<Language, string> => {
@@ -94,6 +137,13 @@ export const ProblemDetailPage: React.FC = () => {
     },
   });
 
+  // Auto-open console when a submission finishes or is active
+  useEffect(() => {
+    if (currentSubmission) {
+      setIsConsoleOpen(true);
+    }
+  }, [currentSubmission]);
+
   // Load Problem Details
   useEffect(() => {
     if (!id) return;
@@ -158,6 +208,8 @@ export const ProblemDetailPage: React.FC = () => {
 
     setSubmissionError(null);
     setIsSubmitting(true);
+    setIsConsoleOpen(true);
+    setIsConsoleMaximized(false);
 
     try {
       const initialSub = await submissionsApi.create({
@@ -212,9 +264,19 @@ export const ProblemDetailPage: React.FC = () => {
   }
 
   return (
-    <div className="container py-4 flex-1 flex flex-col" style={{ maxWidth: '1600px' }}>
+    <div
+      className="container flex-1 flex flex-col"
+      style={{
+        maxWidth: '1800px',
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
+        paddingTop: '0.5rem',
+        paddingBottom: '0.5rem',
+      }}
+    >
       {/* Top Breadcrumb Bar */}
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2" style={{ flexShrink: 0 }}>
         <Link
           to="/problems"
           className="flex items-center gap-1.5"
@@ -462,9 +524,9 @@ export const ProblemDetailPage: React.FC = () => {
         {/* ============================================================ */}
         {/* RIGHT COLUMN: Monaco IDE, Language Switcher, Controls & Verdict */}
         {/* ============================================================ */}
-        <div className="glass-panel problem-right-panel">
+        <div ref={rightPanelRef} className="glass-panel problem-right-panel">
           {/* Top IDE Toolbar */}
-          <div className="flex items-center justify-between mb-3 px-1 flex-wrap gap-2">
+          <div className="flex items-center justify-between mb-2 px-1 flex-wrap gap-2" style={{ flexShrink: 0 }}>
             <div className="flex items-center gap-2">
               <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
                 Language:
@@ -481,6 +543,22 @@ export const ProblemDetailPage: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2">
+              {currentSubmission && (
+                <button
+                  onClick={() => setIsExecutionModalOpen(true)}
+                  className="btn btn-ghost btn-sm flex items-center gap-1.5"
+                  style={{
+                    fontSize: '0.8rem',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                  }}
+                  title="Open execution verdict popup"
+                >
+                  <Sparkles size={14} color="var(--accent-indigo)" />
+                  <span>Verdict HUD</span>
+                </button>
+              )}
+
               <button
                 onClick={handleSubmit}
                 disabled={isSubmitting || isPolling}
@@ -498,14 +576,20 @@ export const ProblemDetailPage: React.FC = () => {
 
           {/* Rate Limiting / Submission Warning Toast */}
           {submissionError && (
-            <div className="alert-banner alert-warning mb-3">
+            <div className="alert-banner alert-warning mb-2" style={{ flexShrink: 0 }}>
               <AlertTriangle size={16} />
               <span>{submissionError}</span>
             </div>
           )}
 
           {/* Monaco Code Editor Container */}
-          <div className="editor-monaco-wrapper">
+          <div
+            className="editor-monaco-wrapper"
+            style={{
+              pointerEvents: isDraggingConsole ? 'none' : 'auto',
+              userSelect: isDraggingConsole ? 'none' : 'auto',
+            }}
+          >
             <CodeEditor
               language={language}
               code={codeMap[language]}
@@ -515,12 +599,142 @@ export const ProblemDetailPage: React.FC = () => {
             />
           </div>
 
-          {/* Verdict Card & Live Evaluation Stats */}
-          <div style={{ maxHeight: '240px', overflowY: 'auto', marginTop: '0.75rem' }}>
-            <VerdictCard submission={currentSubmission} isPolling={isPolling} />
-          </div>
+          {/* Resizable Console & Live Verdict Section */}
+          {isConsoleOpen ? (
+            <>
+              {/* Draggable Resizer Bar */}
+              {!isConsoleMaximized && (
+                <div
+                  className={`console-resizer ${isDraggingConsole ? 'dragging' : ''}`}
+                  onMouseDown={handleConsoleResizeStart}
+                  style={{ flexShrink: 0 }}
+                  title="Drag up or down to resize console"
+                >
+                  <div className="console-resizer-handle" />
+                </div>
+              )}
+
+              {/* Resizable Console Container */}
+              <div
+                style={{
+                  height: isConsoleMaximized ? '100%' : `${consoleHeight}px`,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  overflow: 'hidden',
+                  marginTop: '2px',
+                  flexShrink: 0,
+                  position: isConsoleMaximized ? 'absolute' : 'relative',
+                  inset: isConsoleMaximized ? 0 : undefined,
+                  zIndex: isConsoleMaximized ? 20 : 1,
+                  boxShadow: '0 -4px 14px rgba(0, 0, 0, 0.25)',
+                }}
+              >
+                {/* Console Header Bar */}
+                <div
+                  className="flex items-center justify-between px-3 py-1.5"
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    borderBottom: '1px solid var(--border-subtle)',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <Terminal size={14} color="var(--accent-indigo)" />
+                    <span style={{ fontWeight: 600 }}>Console & Test Results</span>
+                    {isPolling ? (
+                      <span className="flex items-center gap-1" style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>
+                        <Loader2 size={12} className="animate-spin" /> Evaluating...
+                      </span>
+                    ) : currentSubmission ? (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        (Last: <code style={{ color: 'var(--text-secondary)' }}>{currentSubmission.id.slice(0, 6)}</code>)
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setIsConsoleMaximized(!isConsoleMaximized)}
+                      className="btn btn-ghost btn-sm"
+                      style={{ padding: '2px 6px' }}
+                      title={isConsoleMaximized ? 'Restore console size' : 'Maximize console'}
+                    >
+                      {isConsoleMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setIsConsoleOpen(false);
+                        setIsConsoleMaximized(false);
+                      }}
+                      className="btn btn-ghost btn-sm"
+                      style={{ padding: '2px 6px' }}
+                      title="Collapse console"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Console Scrollable Body */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: '0.75rem' }}>
+                  <VerdictCard submission={currentSubmission} isPolling={isPolling} noMargin />
+                </div>
+              </div>
+            </>
+          ) : (
+            /* Collapsed Bottom Bar */
+            <div className="flex items-center justify-between pt-2">
+              <button
+                onClick={() => setIsConsoleOpen(true)}
+                className="btn btn-ghost btn-sm flex items-center gap-1.5"
+                style={{
+                  fontSize: '0.75rem',
+                  padding: '3px 10px',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  color: 'var(--text-secondary)',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                }}
+                title="Expand execution console and results"
+              >
+                <Terminal size={13} color="var(--accent-indigo)" />
+                <span>Console & Test Results</span>
+                {currentSubmission && (
+                  <span
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      background:
+                        currentSubmission.verdict === 'ACCEPTED'
+                          ? 'var(--accent-emerald)'
+                          : 'var(--accent-rose)',
+                      display: 'inline-block',
+                    }}
+                  />
+                )}
+                <ChevronUp size={13} />
+              </button>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Real-time Execution Modal Overlay */}
+      <ExecutionModal
+        isOpen={isExecutionModalOpen}
+        onClose={() => setIsExecutionModalOpen(false)}
+        submission={currentSubmission}
+        isSubmitting={isSubmitting}
+        isPolling={isPolling}
+        problemTitle={problem.title}
+        language={language}
+        onViewHistory={() => setActiveTab('history')}
+      />
     </div>
   );
 };
