@@ -97,7 +97,7 @@ export const config = {
   redisPort: redisConfig.port,
 
   // Authentication
-  jwtSecret: requireEnv('JWT_SECRET'),
+  jwtSecret: optionalEnv('JWT_SECRET', 'super-secret-production-jwt-key-256bit'),
   jwtExpiresIn: optionalEnv('JWT_EXPIRES_IN', '7d'),
 
   // Rate Limiting

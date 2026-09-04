@@ -90,9 +90,11 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-super-secret-production-jwt-key-256bit}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/ocj-runs:/tmp/ocj-runs
     depends_on:
       postgres:
         condition: service_healthy

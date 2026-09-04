@@ -111,7 +111,14 @@ export abstract class BaseExecutor {
   async createTempDir(): Promise<string> {
     const tempBase = path.join(os.tmpdir(), 'ocj-runs');
     await fs.mkdir(tempBase, { recursive: true });
-    return await fs.mkdtemp(path.join(tempBase, 'run-'));
+    try {
+      await fs.chmod(tempBase, 0o777);
+    } catch {}
+    const dir = await fs.mkdtemp(path.join(tempBase, 'run-'));
+    try {
+      await fs.chmod(dir, 0o777);
+    } catch {}
+    return dir;
   }
 
   /**
@@ -120,6 +127,9 @@ export abstract class BaseExecutor {
   async writeSourceFile(dir: string, sourceCode: string): Promise<string> {
     const filePath = path.join(dir, this.sourceFilename);
     await fs.writeFile(filePath, sourceCode, 'utf-8');
+    try {
+      await fs.chmod(filePath, 0o666);
+    } catch {}
     return filePath;
   }
 
