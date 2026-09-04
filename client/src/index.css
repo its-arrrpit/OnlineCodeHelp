@@ -399,15 +399,44 @@ code, pre {
   color: #a7f3d0;
 }
 
-/* ===================================================================
-   Responsive Mobile & Tablet Optimization
-   =================================================================== */
+/* Problem Details Workspace Grid */
+.problem-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 4.5fr) minmax(440px, 5.5fr);
+  gap: 1rem;
+  flex: 1;
+  align-items: stretch;
+  min-height: 0;
+  height: calc(100vh - 130px);
+}
+
+.problem-left-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.problem-right-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 0.75rem;
+}
+
+.editor-monaco-wrapper {
+  flex: 1;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+}
 
 .show-on-mobile {
   display: none !important;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 900px) {
   .container {
     padding-left: 1rem;
     padding-right: 1rem;
@@ -421,16 +450,30 @@ code, pre {
     display: flex !important;
   }
 
-  /* Responsive Problem Workspace */
+  /* Responsive Problem Workspace on tablet/mobile */
   .problem-workspace-grid {
     display: flex !important;
     flex-direction: column !important;
-    gap: 1rem !important;
+    gap: 1.25rem !important;
+    height: auto !important;
   }
 
-  .problem-panel-column {
+  .problem-left-panel {
     height: auto !important;
-    max-height: none !important;
+    max-height: 480px !important;
+    overflow: hidden !important;
+  }
+
+  .problem-right-panel {
+    height: auto !important;
+    overflow: visible !important;
+    min-height: 520px !important;
+  }
+
+  .editor-monaco-wrapper {
+    height: 420px !important;
+    min-height: 380px !important;
+    flex: none !important;
   }
 
   /* Responsive Telemetry Modal */

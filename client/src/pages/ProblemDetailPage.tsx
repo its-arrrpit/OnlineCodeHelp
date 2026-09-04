@@ -11,8 +11,6 @@ import {
   AlertTriangle,
   Copy,
   Check,
-  Code2,
-  Terminal,
 } from 'lucide-react';
 import type { Problem, Language, Submission, Difficulty } from '../types';
 import { problemsApi, submissionsApi } from '../services/api';
@@ -31,18 +29,6 @@ export const ProblemDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'description' | 'history'>('description');
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-
-  // Mobile state & responsive breakpoint
-  const [mobileTab, setMobileTab] = useState<'problem' | 'editor' | 'verdict'>('problem');
-  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 860);
-
-  useEffect(() => {
-    const handleResize = () => {
-      setIsMobile(window.innerWidth < 860);
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   // Editor State per language (persisted to localStorage)
   const getInitialCodeMap = useCallback((problemId?: string): Record<Language, string> => {
@@ -173,11 +159,6 @@ export const ProblemDetailPage: React.FC = () => {
     setSubmissionError(null);
     setIsSubmitting(true);
 
-    // On mobile, auto-switch to verdict tab to watch execution live!
-    if (isMobile) {
-      setMobileTab('verdict');
-    }
-
     try {
       const initialSub = await submissionsApi.create({
         problemId: id,
@@ -230,344 +211,10 @@ export const ProblemDetailPage: React.FC = () => {
     );
   }
 
-  // Render Submissions History list
-  const renderHistory = () => (
-    <div>
-      <h4 style={{ fontSize: '1rem', marginBottom: '1rem' }}>Past Submissions</h4>
-
-      {loadingHistory ? (
-        <div className="py-8 flex justify-center">
-          <Loader2 size={24} className="animate-spin" color="var(--accent-indigo)" />
-        </div>
-      ) : history.length === 0 ? (
-        <div className="text-center py-8 text-secondary" style={{ fontSize: '0.875rem' }}>
-          No previous submissions recorded for this problem yet.
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {history.map((sub) => (
-            <div
-              key={sub.id}
-              className="flex items-center justify-between p-3"
-              style={{
-                background: 'var(--bg-surface)',
-                borderRadius: 'var(--radius-md)',
-                border: '1px solid var(--border-subtle)',
-                fontSize: '0.8rem',
-              }}
-            >
-              <div className="flex items-center gap-3">
-                <StatusBadge status={sub.status} verdict={sub.verdict} />
-                <span style={{ color: 'var(--text-muted)' }}>{sub.language}</span>
-              </div>
-
-              <div className="flex items-center gap-4" style={{ color: 'var(--text-secondary)' }}>
-                <span>{sub.executionTimeMs ? `${sub.executionTimeMs} ms` : '—'}</span>
-                <span>
-                  {sub.memoryUsedMb
-                    ? `${sub.memoryUsedMb} MB`
-                    : sub.memoryUsedKb
-                    ? `${(sub.memoryUsedKb / 1024).toFixed(1)} MB`
-                    : '—'}
-                </span>
-                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                  {new Date(sub.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-
-  // Render Left Panel (Description + Samples)
-  const renderProblemPanel = () => (
-    <div
-      className="glass-panel flex flex-col problem-panel-column"
-      style={{
-        height: isMobile ? 'auto' : 'calc(100vh - 130px)',
-        overflow: isMobile ? 'visible' : 'hidden',
-      }}
-    >
-      {/* Desktop Panel Tabs Header */}
-      {!isMobile && (
-        <div
-          className="flex items-center gap-2 px-4 py-2"
-          style={{
-            background: 'var(--bg-surface)',
-            borderBottom: '1px solid var(--border-subtle)',
-          }}
-        >
-          <button
-            onClick={() => setActiveTab('description')}
-            className="btn btn-ghost btn-sm"
-            style={{
-              color: activeTab === 'description' ? 'var(--text-primary)' : 'var(--text-muted)',
-              borderBottom: activeTab === 'description' ? '2px solid var(--accent-indigo)' : '2px solid transparent',
-              borderRadius: 0,
-              padding: '6px 12px',
-            }}
-          >
-            <FileText size={15} />
-            Description
-          </button>
-
-          {isAuthenticated && (
-            <button
-              onClick={() => setActiveTab('history')}
-              className="btn btn-ghost btn-sm"
-              style={{
-                color: activeTab === 'history' ? 'var(--text-primary)' : 'var(--text-muted)',
-                borderBottom: activeTab === 'history' ? '2px solid var(--accent-indigo)' : '2px solid transparent',
-                borderRadius: 0,
-                padding: '6px 12px',
-              }}
-            >
-              <History size={15} />
-              Submissions
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Content Body */}
-      <div style={{ flex: 1, overflowY: isMobile ? 'visible' : 'auto', padding: isMobile ? '1rem' : '1.25rem' }}>
-        {!isMobile && activeTab === 'history' ? (
-          renderHistory()
-        ) : (
-          <div>
-            {/* Title & Difficulty Row */}
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <h2 style={{ fontSize: isMobile ? '1.25rem' : '1.4rem', fontWeight: 800 }}>{problem.title}</h2>
-              <DifficultyBadge difficulty={problem.difficulty as Difficulty} />
-            </div>
-
-            {/* Tags */}
-            {problem.tags && problem.tags.length > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap mb-4">
-                {problem.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    style={{
-                      fontSize: '0.725rem',
-                      background: 'rgba(255, 255, 255, 0.05)',
-                      padding: '2px 8px',
-                      borderRadius: '4px',
-                      color: 'var(--text-secondary)',
-                      border: '1px solid var(--border-subtle)',
-                    }}
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Problem Statement Body */}
-            <div
-              style={{
-                fontSize: '0.9rem',
-                lineHeight: 1.65,
-                color: 'var(--text-primary)',
-                whiteSpace: 'pre-wrap',
-                marginBottom: '1.5rem',
-              }}
-            >
-              {problem.description}
-            </div>
-
-            {/* Public Sample Test Cases */}
-            {problem.testCases && problem.testCases.length > 0 && (
-              <div>
-                <h4 style={{ fontSize: '0.95rem', marginBottom: '0.75rem' }}>Sample Test Cases</h4>
-                <div className="flex flex-col gap-3">
-                  {problem.testCases.map((tc, idx) => (
-                    <div
-                      key={tc.id || idx}
-                      style={{
-                        background: 'var(--bg-surface)',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: 'var(--radius-md)',
-                        padding: '0.85rem',
-                      }}
-                    >
-                      <div
-                        className="flex items-center justify-between mb-2"
-                        style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}
-                      >
-                        <span>EXAMPLE {idx + 1}</span>
-                        <button
-                          onClick={() => handleCopy(`Input:\n${tc.input}\nExpected:\n${tc.expectedOutput}`, idx)}
-                          className="btn btn-ghost btn-sm"
-                          style={{ padding: '2px 6px', fontSize: '0.7rem' }}
-                        >
-                          {copiedIndex === idx ? (
-                            <>
-                              <Check size={12} color="var(--accent-emerald)" /> Copied
-                            </>
-                          ) : (
-                            <>
-                              <Copy size={12} /> Copy
-                            </>
-                          )}
-                        </button>
-                      </div>
-
-                      <div style={{ fontSize: '0.8rem', marginBottom: '0.5rem' }}>
-                        <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                          Input:
-                        </span>
-                        <pre
-                          style={{
-                            background: '#0a0e17',
-                            padding: '6px 10px',
-                            borderRadius: '4px',
-                            color: 'var(--accent-cyan)',
-                            overflowX: 'auto',
-                          }}
-                        >
-                          {tc.input}
-                        </pre>
-                      </div>
-
-                      <div style={{ fontSize: '0.8rem' }}>
-                        <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                          Expected Output:
-                        </span>
-                        <pre
-                          style={{
-                            background: '#0a0e17',
-                            padding: '6px 10px',
-                            borderRadius: '4px',
-                            color: 'var(--accent-emerald)',
-                            overflowX: 'auto',
-                          }}
-                        >
-                          {tc.expectedOutput}
-                        </pre>
-                      </div>
-
-                      {tc.explanation && (
-                        <div style={{ fontSize: '0.775rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-                          <span style={{ fontWeight: 600 }}>Explanation: </span>
-                          {tc.explanation}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Mobile quick-action button */}
-            {isMobile && (
-              <button
-                onClick={() => setMobileTab('editor')}
-                className="btn btn-primary w-full mt-5 flex items-center justify-center gap-2"
-                style={{ padding: '0.75rem' }}
-              >
-                <Code2 size={16} />
-                Open Code Editor ➔
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
-  // Render Right Panel (Editor + Controls)
-  const renderEditorPanel = () => (
-    <div
-      className="glass-panel flex flex-col p-3 problem-panel-column"
-      style={{
-        height: isMobile ? 'auto' : 'calc(100vh - 130px)',
-        minHeight: isMobile ? '500px' : undefined,
-        overflow: 'hidden',
-      }}
-    >
-      {/* Top IDE Toolbar */}
-      <div className="flex items-center justify-between mb-3 px-1 flex-wrap gap-2">
-        <div className="flex items-center gap-2">
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-            Language:
-          </span>
-          <select
-            className="select-field"
-            value={language}
-            onChange={(e) => handleLanguageChange(e.target.value as Language)}
-          >
-            <option value="PYTHON">Python 3 (3.11)</option>
-            <option value="CPP">C++ (GCC 13 / C++17)</option>
-            <option value="JAVA">Java 21 (OpenJDK)</option>
-          </select>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleSubmit}
-            disabled={isSubmitting || isPolling}
-            className="btn btn-success btn-sm"
-          >
-            {isSubmitting || isPolling ? (
-              <Loader2 size={15} className="animate-spin" />
-            ) : (
-              <Send size={15} />
-            )}
-            {isSubmitting ? 'Queueing...' : isPolling ? 'Evaluating...' : 'Submit Solution'}
-          </button>
-        </div>
-      </div>
-
-      {/* Rate Limiting / Submission Warning Toast */}
-      {submissionError && (
-        <div className="alert-banner alert-warning mb-3">
-          <AlertTriangle size={16} />
-          <span>{submissionError}</span>
-        </div>
-      )}
-
-      {/* Monaco Code Editor Container */}
-      <div style={{ flex: 1, minHeight: isMobile ? '380px' : 0, height: isMobile ? '420px' : undefined }}>
-        <CodeEditor
-          language={language}
-          code={codeMap[language]}
-          onChange={handleCodeChange}
-          onReset={handleResetCode}
-          readOnly={isSubmitting || isPolling}
-        />
-      </div>
-
-      {/* Desktop Verdict Card (on mobile, shown in dedicated Verdict tab) */}
-      {!isMobile && (
-        <div style={{ maxHeight: '240px', overflowY: 'auto' }}>
-          <VerdictCard submission={currentSubmission} isPolling={isPolling} />
-        </div>
-      )}
-    </div>
-  );
-
-  // Render Mobile Verdict & History Tab
-  const renderVerdictMobile = () => (
-    <div className="flex flex-col gap-4">
-      {/* Live Verdict Card */}
-      <div className="glass-panel p-3">
-        <h4 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.75rem' }}>Current Evaluation Verdict</h4>
-        <VerdictCard submission={currentSubmission} isPolling={isPolling} />
-      </div>
-
-      {/* Submission History */}
-      <div className="glass-panel p-4">
-        {renderHistory()}
-      </div>
-    </div>
-  );
-
   return (
     <div className="container py-4 flex-1 flex flex-col" style={{ maxWidth: '1600px' }}>
       {/* Top Breadcrumb Bar */}
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <Link
           to="/problems"
           className="flex items-center gap-1.5"
@@ -579,61 +226,300 @@ export const ProblemDetailPage: React.FC = () => {
 
         <div className="flex items-center gap-4" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
           <span className="flex items-center gap-1">
-            <Clock size={13} color="var(--accent-cyan)" /> {problem.timeLimitMs} ms
+            <Clock size={13} color="var(--accent-cyan)" /> Time Limit: {problem.timeLimitMs} ms
           </span>
           <span className="flex items-center gap-1">
-            <Cpu size={13} color="var(--accent-indigo)" /> {problem.memoryLimitMb} MB
+            <Cpu size={13} color="var(--accent-indigo)" /> Memory Limit: {problem.memoryLimitMb} MB
           </span>
         </div>
       </div>
 
-      {/* Mobile Navigation Tab Bar */}
-      {isMobile && (
-        <div
-          className="glass-panel flex items-center justify-between p-1.5 mb-3"
-          style={{ borderRadius: 'var(--radius-md)' }}
-        >
-          <button
-            onClick={() => setMobileTab('problem')}
-            className={`btn btn-sm flex-1 ${mobileTab === 'problem' ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ fontSize: '0.8rem', padding: '6px 4px', justifyContent: 'center' }}
-          >
-            <FileText size={14} />
-            Problem
-          </button>
-          <button
-            onClick={() => setMobileTab('editor')}
-            className={`btn btn-sm flex-1 ${mobileTab === 'editor' ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ fontSize: '0.8rem', padding: '6px 4px', justifyContent: 'center' }}
-          >
-            <Code2 size={14} />
-            Editor
-          </button>
-          <button
-            onClick={() => setMobileTab('verdict')}
-            className={`btn btn-sm flex-1 ${mobileTab === 'verdict' ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ fontSize: '0.8rem', padding: '6px 4px', justifyContent: 'center' }}
-          >
-            <Terminal size={14} />
-            Result {currentSubmission ? '●' : ''}
-          </button>
-        </div>
-      )}
-
-      {/* Main Workspace */}
+      {/* Main Split-Pane Workspace */}
       <div className="problem-workspace-grid">
-        {!isMobile ? (
-          <>
-            {renderProblemPanel()}
-            {renderEditorPanel()}
-          </>
-        ) : (
-          <>
-            {mobileTab === 'problem' && renderProblemPanel()}
-            {mobileTab === 'editor' && renderEditorPanel()}
-            {mobileTab === 'verdict' && renderVerdictMobile()}
-          </>
-        )}
+        {/* ============================================================ */}
+        {/* LEFT COLUMN: Problem Specification & Submission History      */}
+        {/* ============================================================ */}
+        <div className="glass-panel problem-left-panel">
+          {/* Panel Tabs Header */}
+          <div
+            className="flex items-center gap-2 px-4 py-2"
+            style={{
+              background: 'var(--bg-surface)',
+              borderBottom: '1px solid var(--border-subtle)',
+            }}
+          >
+            <button
+              onClick={() => setActiveTab('description')}
+              className="btn btn-ghost btn-sm"
+              style={{
+                color: activeTab === 'description' ? 'var(--text-primary)' : 'var(--text-muted)',
+                borderBottom: activeTab === 'description' ? '2px solid var(--accent-indigo)' : '2px solid transparent',
+                borderRadius: 0,
+                padding: '6px 12px',
+              }}
+            >
+              <FileText size={15} />
+              Description
+            </button>
+
+            {isAuthenticated && (
+              <button
+                onClick={() => setActiveTab('history')}
+                className="btn btn-ghost btn-sm"
+                style={{
+                  color: activeTab === 'history' ? 'var(--text-primary)' : 'var(--text-muted)',
+                  borderBottom: activeTab === 'history' ? '2px solid var(--accent-indigo)' : '2px solid transparent',
+                  borderRadius: 0,
+                  padding: '6px 12px',
+                }}
+              >
+                <History size={15} />
+                Submissions
+              </button>
+            )}
+          </div>
+
+          {/* Tab Content Body */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem' }}>
+            {activeTab === 'description' ? (
+              <div>
+                {/* Title & Difficulty Row */}
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h2 style={{ fontSize: '1.4rem', fontWeight: 800 }}>{problem.title}</h2>
+                  <DifficultyBadge difficulty={problem.difficulty as Difficulty} />
+                </div>
+
+                {/* Tags */}
+                {problem.tags && problem.tags.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap mb-4">
+                    {problem.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        style={{
+                          fontSize: '0.725rem',
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          color: 'var(--text-secondary)',
+                          border: '1px solid var(--border-subtle)',
+                        }}
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Problem Statement Body */}
+                <div
+                  style={{
+                    fontSize: '0.9rem',
+                    lineHeight: 1.65,
+                    color: 'var(--text-primary)',
+                    whiteSpace: 'pre-wrap',
+                    marginBottom: '1.5rem',
+                  }}
+                >
+                  {problem.description}
+                </div>
+
+                {/* Public Sample Test Cases */}
+                {problem.testCases && problem.testCases.length > 0 && (
+                  <div>
+                    <h4 style={{ fontSize: '0.95rem', marginBottom: '0.75rem' }}>Sample Test Cases</h4>
+                    <div className="flex flex-col gap-3">
+                      {problem.testCases.map((tc, idx) => (
+                        <div
+                          key={tc.id || idx}
+                          style={{
+                            background: 'var(--bg-surface)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '0.85rem',
+                          }}
+                        >
+                          <div
+                            className="flex items-center justify-between mb-2"
+                            style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}
+                          >
+                            <span>EXAMPLE {idx + 1}</span>
+                            <button
+                              onClick={() => handleCopy(`Input:\n${tc.input}\nExpected:\n${tc.expectedOutput}`, idx)}
+                              className="btn btn-ghost btn-sm"
+                              style={{ padding: '2px 6px', fontSize: '0.7rem' }}
+                            >
+                              {copiedIndex === idx ? (
+                                <>
+                                  <Check size={12} color="var(--accent-emerald)" /> Copied
+                                </>
+                              ) : (
+                                <>
+                                  <Copy size={12} /> Copy
+                                </>
+                              )}
+                            </button>
+                          </div>
+
+                          <div style={{ fontSize: '0.8rem', marginBottom: '0.5rem' }}>
+                            <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
+                              Input:
+                            </span>
+                            <pre
+                              style={{
+                                background: '#0a0e17',
+                                padding: '6px 10px',
+                                borderRadius: '4px',
+                                color: 'var(--accent-cyan)',
+                                overflowX: 'auto',
+                              }}
+                            >
+                              {tc.input}
+                            </pre>
+                          </div>
+
+                          <div style={{ fontSize: '0.8rem' }}>
+                            <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
+                              Expected Output:
+                            </span>
+                            <pre
+                              style={{
+                                background: '#0a0e17',
+                                padding: '6px 10px',
+                                borderRadius: '4px',
+                                color: 'var(--accent-emerald)',
+                                overflowX: 'auto',
+                              }}
+                            >
+                              {tc.expectedOutput}
+                            </pre>
+                          </div>
+
+                          {tc.explanation && (
+                            <div style={{ fontSize: '0.775rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
+                              <span style={{ fontWeight: 600 }}>Explanation: </span>
+                              {tc.explanation}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Submissions History Tab */
+              <div>
+                <h4 style={{ fontSize: '1rem', marginBottom: '1rem' }}>Past Submissions</h4>
+
+                {loadingHistory ? (
+                  <div className="py-8 flex justify-center">
+                    <Loader2 size={24} className="animate-spin" color="var(--accent-indigo)" />
+                  </div>
+                ) : history.length === 0 ? (
+                  <div className="text-center py-8 text-secondary" style={{ fontSize: '0.875rem' }}>
+                    No previous submissions recorded for this problem yet.
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {history.map((sub) => (
+                      <div
+                        key={sub.id}
+                        className="flex items-center justify-between p-3"
+                        style={{
+                          background: 'var(--bg-surface)',
+                          borderRadius: 'var(--radius-md)',
+                          border: '1px solid var(--border-subtle)',
+                          fontSize: '0.8rem',
+                        }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <StatusBadge status={sub.status} verdict={sub.verdict} />
+                          <span style={{ color: 'var(--text-muted)' }}>{sub.language}</span>
+                        </div>
+
+                        <div className="flex items-center gap-4" style={{ color: 'var(--text-secondary)' }}>
+                          <span>{sub.executionTimeMs ? `${sub.executionTimeMs} ms` : '—'}</span>
+                          <span>
+                            {sub.memoryUsedMb
+                              ? `${sub.memoryUsedMb} MB`
+                              : sub.memoryUsedKb
+                              ? `${(sub.memoryUsedKb / 1024).toFixed(1)} MB`
+                              : '—'}
+                          </span>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                            {new Date(sub.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ============================================================ */}
+        {/* RIGHT COLUMN: Monaco IDE, Language Switcher, Controls & Verdict */}
+        {/* ============================================================ */}
+        <div className="glass-panel problem-right-panel">
+          {/* Top IDE Toolbar */}
+          <div className="flex items-center justify-between mb-3 px-1 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                Language:
+              </span>
+              <select
+                className="select-field"
+                value={language}
+                onChange={(e) => handleLanguageChange(e.target.value as Language)}
+              >
+                <option value="PYTHON">Python 3 (3.11)</option>
+                <option value="CPP">C++ (GCC 13 / C++17)</option>
+                <option value="JAVA">Java 21 (OpenJDK)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSubmit}
+                disabled={isSubmitting || isPolling}
+                className="btn btn-success btn-sm"
+              >
+                {isSubmitting || isPolling ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Send size={15} />
+                )}
+                {isSubmitting ? 'Queueing...' : isPolling ? 'Evaluating...' : 'Submit Solution'}
+              </button>
+            </div>
+          </div>
+
+          {/* Rate Limiting / Submission Warning Toast */}
+          {submissionError && (
+            <div className="alert-banner alert-warning mb-3">
+              <AlertTriangle size={16} />
+              <span>{submissionError}</span>
+            </div>
+          )}
+
+          {/* Monaco Code Editor Container */}
+          <div className="editor-monaco-wrapper">
+            <CodeEditor
+              language={language}
+              code={codeMap[language]}
+              onChange={handleCodeChange}
+              onReset={handleResetCode}
+              readOnly={isSubmitting || isPolling}
+            />
+          </div>
+
+          {/* Verdict Card & Live Evaluation Stats */}
+          <div style={{ maxHeight: '240px', overflowY: 'auto', marginTop: '0.75rem' }}>
+            <VerdictCard submission={currentSubmission} isPolling={isPolling} />
+          </div>
+        </div>
       </div>
     </div>
   );
