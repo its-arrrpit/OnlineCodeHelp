@@ -113,7 +113,7 @@ services:
     container_name: ocj-prod-nginx
     restart: always
     ports:
-      - "${PROD_HTTP_PORT:-8080}:80"
+      - "80:80"
     depends_on:
       api:
         condition: service_healthy
