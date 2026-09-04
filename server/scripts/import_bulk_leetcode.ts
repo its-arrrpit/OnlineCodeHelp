@@ -20,7 +20,22 @@ import * as path from 'path';
 
 const DATASET_URL =
   'https://huggingface.co/datasets/Alishohadaee/leetcode-problems-dataset/resolve/main/raw_data/leetcode_problems.json';
-const LOCAL_CACHE_PATH = path.resolve(__dirname, '../data/leetcode_problems.json');
+
+function getLocalCachePath(): string {
+  const candidates = [
+    path.resolve(__dirname, '../data/leetcode_problems.json'),
+    path.resolve(__dirname, '../../data/leetcode_problems.json'),
+    path.resolve(process.cwd(), 'data/leetcode_problems.json'),
+    path.resolve(process.cwd(), 'server/data/leetcode_problems.json'),
+    path.resolve('/app/data/leetcode_problems.json'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0]!;
+}
+
+const LOCAL_CACHE_PATH = getLocalCachePath();
 
 const prisma = new PrismaClient();
 

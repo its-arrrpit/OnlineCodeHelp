@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:worker": "tsx watch src/worker.ts",
-    "build": "tsc",
+    "build": "tsc && tsc scripts/import_bulk_leetcode.ts --skipLibCheck --module commonjs --target es2022 --moduleResolution node --esModuleInterop --outDir dist/scripts",
     "start": "node dist/index.js",
     "start:worker": "node dist/worker.js",
     "prisma:generate": "prisma generate",
@@ -15,6 +15,7 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "seed:more": "tsx prisma/seed_expanded.ts",
     "seed:bulk": "tsx scripts/import_bulk_leetcode.ts",
+    "seed:bulk:prod": "node dist/scripts/import_bulk_leetcode.js",
     "test": "jest --passWithNoTests"
   },
   "dependencies": {

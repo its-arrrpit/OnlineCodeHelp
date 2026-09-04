@@ -18,6 +18,8 @@ RUN npx prisma generate
 
 COPY tsconfig.json ./
 COPY src ./src/
+COPY scripts ./scripts/
+COPY data ./data/
 
 RUN npm run build
 
@@ -41,8 +43,9 @@ RUN apk add --no-cache --virtual .build-deps python3 make g++ \
     && apk del .build-deps \
     && npm cache clean --force
 
-# Copy compiled JavaScript from builder
+# Copy compiled JavaScript and dataset from builder
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/data ./data
 
 # Create dedicated non-root application user
 RUN addgroup -S -g 1001 appgroup && adduser -S -u 1001 -G appgroup appuser

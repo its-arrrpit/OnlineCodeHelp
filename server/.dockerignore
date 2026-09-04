@@ -5,6 +5,5 @@ dist
 .env.*
 .git
 .gitignore
-scripts
 coverage
 *.md
