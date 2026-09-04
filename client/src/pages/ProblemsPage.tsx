@@ -119,30 +119,31 @@ export const ProblemsPage: React.FC = () => {
           </p>
         </div>
       ) : (
-        <div className="glass-panel" style={{ overflow: 'hidden' }}>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(250px, 3fr) 120px minmax(180px, 2fr) 140px 110px',
-              padding: '0.85rem 1.25rem',
-              background: 'var(--bg-surface)',
-              borderBottom: '1px solid var(--border-subtle)',
-              fontSize: '0.75rem',
-              fontWeight: 700,
-              color: 'var(--text-muted)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-            }}
-          >
-            <span>Title</span>
-            <span>Difficulty</span>
-            <span>Tags</span>
-            <span>Limits</span>
-            <span style={{ textAlign: 'right' }}>Action</span>
-          </div>
+        <div className="glass-panel" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <div style={{ minWidth: '720px' }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(250px, 3fr) 120px minmax(180px, 2fr) 140px 110px',
+                padding: '0.85rem 1.25rem',
+                background: 'var(--bg-surface)',
+                borderBottom: '1px solid var(--border-subtle)',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                color: 'var(--text-muted)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              }}
+            >
+              <span>Title</span>
+              <span>Difficulty</span>
+              <span>Tags</span>
+              <span>Limits</span>
+              <span style={{ textAlign: 'right' }}>Action</span>
+            </div>
 
-          <div>
-            {problems.map((prob, idx) => (
+            <div>
+              {problems.map((prob, idx) => (
               <div
                 key={prob.id}
                 style={{
@@ -221,6 +222,7 @@ export const ProblemsPage: React.FC = () => {
                 </div>
               </div>
             ))}
+          </div>
           </div>
         </div>
       )}

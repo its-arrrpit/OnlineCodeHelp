@@ -104,6 +104,8 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
         className="glass-panel p-6 w-full"
         style={{
           maxWidth: '680px',
+          maxHeight: '90vh',
+          overflowY: 'auto',
           background: 'rgba(15, 23, 42, 0.92)',
           border: '1px solid rgba(99, 102, 241, 0.3)',
           boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6)',
@@ -148,6 +150,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
 
         {/* Component Health Grid */}
         <div
+          className="telemetry-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(3, 1fr)',
@@ -253,7 +256,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
             </span>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', textAlign: 'center' }}>
+          <div className="telemetry-queue-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', textAlign: 'center' }}>
             <div className="p-2" style={{ background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)' }}>
               <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--accent-cyan)' }}>
                 {status?.queue.waiting ?? 0}

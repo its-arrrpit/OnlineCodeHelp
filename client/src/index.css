@@ -398,3 +398,72 @@ code, pre {
   border: 1px solid rgba(16, 185, 129, 0.35);
   color: #a7f3d0;
 }
+
+/* ===================================================================
+   Responsive Mobile & Tablet Optimization
+   =================================================================== */
+
+.show-on-mobile {
+  display: none !important;
+}
+
+@media (max-width: 860px) {
+  .container {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .hide-on-mobile {
+    display: none !important;
+  }
+
+  .show-on-mobile {
+    display: flex !important;
+  }
+
+  /* Responsive Problem Workspace */
+  .problem-workspace-grid {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 1rem !important;
+  }
+
+  .problem-panel-column {
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  /* Responsive Telemetry Modal */
+  .telemetry-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .telemetry-queue-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .container {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  h1 { font-size: 1.65rem !important; }
+  h2 { font-size: 1.3rem !important; }
+  h3 { font-size: 1.1rem !important; }
+
+  .btn {
+    padding: 0.5rem 0.85rem;
+    font-size: 0.825rem;
+  }
+
+  .glass-panel {
+    border-radius: var(--radius-md);
+  }
+
+  .mobile-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}

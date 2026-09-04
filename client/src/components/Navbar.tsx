@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Code2, Terminal, User as UserIcon, LogOut, ShieldCheck, Activity } from 'lucide-react';
+import { Code2, Terminal, User as UserIcon, LogOut, ShieldCheck, Activity, Menu, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { SystemHealthModal } from './SystemHealthModal';
 
@@ -9,9 +9,11 @@ export const Navbar: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [telemetryOpen, setTelemetryOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handleLogout = () => {
     logout();
+    setMobileMenuOpen(false);
     navigate('/login');
   };
 
@@ -19,7 +21,7 @@ export const Navbar: React.FC = () => {
 
   return (
     <>
-      <nav className="glass-nav">
+      <nav className="glass-nav" style={{ position: 'sticky', top: 0, zIndex: 50 }}>
         <div className="container flex items-center justify-between py-3">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-2 text-decoration-none">
@@ -41,8 +43,8 @@ export const Navbar: React.FC = () => {
             </span>
           </Link>
 
-          {/* Navigation Links */}
-          <div className="flex items-center gap-6">
+          {/* Desktop Navigation Links */}
+          <div className="flex items-center gap-6 hide-on-mobile">
             <Link
               to="/problems"
               className="flex items-center gap-1.5"
@@ -91,8 +93,8 @@ export const Navbar: React.FC = () => {
             </button>
           </div>
 
-          {/* User Auth Pill */}
-          <div className="flex items-center gap-3">
+          {/* Desktop User Auth Pill */}
+          <div className="flex items-center gap-3 hide-on-mobile">
             {isAuthenticated ? (
               <div className="flex items-center gap-3">
                 <div
@@ -159,7 +161,128 @@ export const Navbar: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Mobile Right Controls: Telemetry Icon + Hamburger */}
+          <div className="show-on-mobile items-center gap-2">
+            <button
+              onClick={() => setTelemetryOpen(true)}
+              className="btn btn-ghost btn-sm"
+              style={{
+                color: 'var(--accent-cyan)',
+                border: '1px solid rgba(6, 182, 212, 0.3)',
+                padding: '6px',
+                borderRadius: '8px',
+              }}
+              aria-label="Telemetry"
+            >
+              <Activity size={16} className="animate-pulse" />
+            </button>
+
+            <button
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="btn btn-ghost btn-sm"
+              style={{ padding: '6px', borderRadius: '8px' }}
+              aria-label="Toggle Menu"
+            >
+              {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
+          </div>
         </div>
+
+        {/* Mobile Dropdown Menu */}
+        {mobileMenuOpen && (
+          <div
+            className="show-on-mobile flex-col p-4"
+            style={{
+              background: 'var(--bg-surface)',
+              borderBottom: '1px solid var(--border-subtle)',
+              animation: 'fadeIn 150ms ease-out',
+            }}
+          >
+            <div className="flex flex-col gap-3">
+              <Link
+                to="/problems"
+                onClick={() => setMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-2"
+                style={{
+                  color: isActive('/problems') ? 'var(--accent-indigo)' : 'var(--text-primary)',
+                  fontWeight: 600,
+                  fontSize: '0.95rem',
+                }}
+              >
+                <Code2 size={18} />
+                Problems Catalog
+              </Link>
+
+              {isAuthenticated && (
+                <Link
+                  to="/submissions"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="flex items-center gap-2 p-2"
+                  style={{
+                    color: isActive('/submissions') ? 'var(--accent-indigo)' : 'var(--text-primary)',
+                    fontWeight: 600,
+                    fontSize: '0.95rem',
+                  }}
+                >
+                  <Terminal size={18} />
+                  My Submissions
+                </Link>
+              )}
+
+              <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '0.25rem 0' }} />
+
+              {isAuthenticated ? (
+                <div className="flex items-center justify-between p-2">
+                  <div className="flex items-center gap-2">
+                    <div
+                      style={{
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '50%',
+                        background: 'linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <UserIcon size={16} color="#ffffff" />
+                    </div>
+                    <span style={{ fontWeight: 600 }}>{user?.username}</span>
+                  </div>
+
+                  <button
+                    onClick={handleLogout}
+                    className="btn btn-secondary btn-sm"
+                    style={{ fontSize: '0.8rem', padding: '4px 10px' }}
+                  >
+                    <LogOut size={14} />
+                    Logout
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 pt-2">
+                  <Link
+                    to="/login"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="btn btn-secondary btn-sm flex-1"
+                    style={{ justifyContent: 'center' }}
+                  >
+                    Sign In
+                  </Link>
+                  <Link
+                    to="/register"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="btn btn-primary btn-sm flex-1"
+                    style={{ justifyContent: 'center' }}
+                  >
+                    Get Started
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </nav>
 
       {/* Live System Health Modal */}
